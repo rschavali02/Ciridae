@@ -1,0 +1,4 @@
+anthropic
+pdfplumber
+pydantic-settings
+pytest
