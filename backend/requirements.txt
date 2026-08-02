@@ -7,6 +7,7 @@ uvicorn[standard]
 python-multipart
 httpx
 sqlalchemy>=2.0
+greenlet
 asyncpg
 alembic
 pgvector
