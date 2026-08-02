@@ -4,417 +4,35 @@
 
 **Goal:** Build the backend for the invoice agent — extraction pipeline, RAG, a tool-using agent, and an eval harness — so it can be driven from a script/API before any frontend exists.
 
-**Architecture:** FastAPI app backed by Postgres (pgvector for embeddings), SQLAlchemy 2.0 async ORM + Alembic migrations. A hybrid text-layer/vision extraction pipeline feeds structured fields and RAG chunks. A hand-rolled Anthropic tool-use loop drives the agent over six tools. An eval harness runs the same agent through 9 fixture cases with per-trial DB isolation, reusing the `agent_runs` transcript table for both live and eval runs.
+**Architecture:** Work outward from the messy PDFs themselves: get extraction working as plain Python first (no database at all), introduce Postgres/pgvector only once RAG needs somewhere to store embeddings, then introduce the rest of the schema only once the agent's tools need it to query/write. A hand-rolled Anthropic tool-use loop drives the agent over six tools, built concurrently with the eval cases that test them. FastAPI shows up last, once there's a `POST /eval/run` worth exposing.
 
-**Tech Stack:** Python 3.12, FastAPI, SQLAlchemy 2.0 (async, `asyncpg` driver), Alembic, Postgres 16 + pgvector (Docker Compose), `anthropic` SDK, `voyageai` SDK, `pdfplumber`, pytest, pytest-asyncio.
+**Tech Stack:** Python 3.12, `pdfplumber`, `anthropic` SDK, `voyageai` SDK, Postgres 16 + pgvector (Docker Compose), SQLAlchemy 2.0 (async, `asyncpg` driver), Alembic, FastAPI, pytest, pytest-asyncio.
 
 **Frontend is out of scope for this plan** — it gets its own plan once this backend runs end-to-end (per the design in `Project.MD`).
 
 ---
 
-## Phase 0 — Scaffolding
+## Phase 0 — Invoice fixtures
 
-### Task 1: Repo skeleton + Postgres via Docker Compose
-
-**Files:**
-- Create: `backend/docker-compose.yml`
-- Create: `backend/.env.example`
-- Create: `backend/requirements.txt`
-- Create: `backend/.gitignore`
-- Create: `backend/app/__init__.py`
-- Create: `backend/tests/__init__.py`
-
-**Step 1: Create the directory structure**
-
-```bash
-mkdir -p backend/app backend/tests backend/fixtures/invoices backend/fixtures/policy
-touch backend/app/__init__.py backend/tests/__init__.py
-```
-
-**Step 2: Write `backend/docker-compose.yml`**
-
-```yaml
-services:
-  db:
-    image: pgvector/pgvector:pg16
-    environment:
-      POSTGRES_USER: invoice_agent
-      POSTGRES_PASSWORD: invoice_agent
-      POSTGRES_DB: invoice_agent
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-volumes:
-  pgdata:
-```
-
-**Step 3: Write `backend/.env.example`**
-
-```
-DATABASE_URL=postgresql+asyncpg://invoice_agent:invoice_agent@localhost:5432/invoice_agent
-ANTHROPIC_API_KEY=sk-ant-...
-VOYAGE_API_KEY=pa-...
-CONFIDENCE_ESCALATION_THRESHOLD=0.7
-```
-
-Copy it: `cp backend/.env.example backend/.env` and fill in real API keys.
-
-**Step 4: Write `backend/requirements.txt`**
-
-```
-fastapi
-uvicorn[standard]
-sqlalchemy>=2.0
-asyncpg
-alembic
-anthropic
-voyageai
-pdfplumber
-pydantic-settings
-pytest
-pytest-asyncio
-httpx
-```
-
-**Step 5: Write `backend/.gitignore`**
-
-```
-.env
-__pycache__/
-*.pyc
-.pytest_cache/
-venv/
-```
-
-**Step 6: Set up the virtualenv and start Postgres**
-
-```bash
-cd backend
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-docker compose up -d
-```
-
-Expected: `docker compose ps` shows the `db` service healthy on port 5432.
-
-**Step 7: Commit**
-
-```bash
-git add backend/docker-compose.yml backend/.env.example backend/requirements.txt backend/.gitignore backend/app/__init__.py backend/tests/__init__.py
-git commit -m "chore: scaffold backend project with Postgres/pgvector via Docker"
-```
-
----
-
-### Task 2: Config + DB engine
-
-**Files:**
-- Create: `backend/app/config.py`
-- Create: `backend/app/db.py`
-- Test: `backend/tests/test_config.py`
-
-**Step 1: Write the failing test**
-
-```python
-# backend/tests/test_config.py
-import os
-from app.config import Settings
-
-def test_settings_reads_env(monkeypatch):
-    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    monkeypatch.setenv("VOYAGE_API_KEY", "pa-test")
-    settings = Settings()
-    assert settings.database_url == "postgresql+asyncpg://u:p@localhost/db"
-    assert settings.confidence_escalation_threshold == 0.7
-```
-
-**Step 2: Run test to verify it fails**
-
-Run: `cd backend && pytest tests/test_config.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'app.config'`
-
-**Step 3: Write `backend/app/config.py`**
-
-```python
-from pydantic_settings import BaseSettings
-
-class Settings(BaseSettings):
-    database_url: str
-    anthropic_api_key: str
-    voyage_api_key: str
-    confidence_escalation_threshold: float = 0.7
-
-    class Config:
-        env_file = ".env"
-
-settings = Settings()
-```
-
-**Step 4: Write `backend/app/db.py`**
-
-```python
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
-from app.config import settings
-
-engine = create_async_engine(settings.database_url, echo=False)
-SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
-
-async def get_session() -> AsyncSession:
-    async with SessionLocal() as session:
-        yield session
-```
-
-**Step 5: Run test to verify it passes**
-
-Run: `pytest tests/test_config.py -v`
-Expected: PASS
-
-**Step 6: Commit**
-
-```bash
-git add backend/app/config.py backend/app/db.py backend/tests/test_config.py
-git commit -m "feat: add settings and async DB engine"
-```
-
----
-
-### Task 3: SQLAlchemy models + Alembic migration
-
-**Files:**
-- Create: `backend/app/models.py`
-- Create: `backend/alembic.ini`
-- Create: `backend/alembic/env.py`
-- Create: `backend/alembic/versions/0001_initial.py`
-
-**Step 1: Write `backend/app/models.py`**
-
-```python
-import uuid
-from datetime import datetime, date
-from sqlalchemy import String, Numeric, Date, DateTime, ForeignKey, Text, Float
-from sqlalchemy.dialects.postgresql import UUID, JSONB
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-from pgvector.sqlalchemy import Vector
-
-class Base(DeclarativeBase):
-    pass
-
-def uuid_pk() -> Mapped[uuid.UUID]:
-    return mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-
-class Vendor(Base):
-    __tablename__ = "vendors"
-    id: Mapped[uuid.UUID] = uuid_pk()
-    name: Mapped[str] = mapped_column(String, nullable=False)
-    normalized_name: Mapped[str] = mapped_column(String, nullable=False)
-    bank_details: Mapped[str] = mapped_column(String, nullable=True)
-
-class Invoice(Base):
-    __tablename__ = "invoices"
-    id: Mapped[uuid.UUID] = uuid_pk()
-    vendor_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("vendors.id"), nullable=True)
-    invoice_number: Mapped[str] = mapped_column(String, nullable=True)
-    amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=True)
-    due_date: Mapped[date] = mapped_column(Date, nullable=True)
-    po_number: Mapped[str] = mapped_column(String, nullable=True)
-    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
-    confidence_score: Mapped[float] = mapped_column(Float, nullable=True)
-    raw_pdf_path: Mapped[str] = mapped_column(String, nullable=False)
-    raw_text: Mapped[str] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-
-    line_items: Mapped[list["LineItem"]] = relationship(back_populates="invoice")
-
-class LineItem(Base):
-    __tablename__ = "line_items"
-    id: Mapped[uuid.UUID] = uuid_pk()
-    invoice_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("invoices.id"), nullable=False)
-    description: Mapped[str] = mapped_column(String, nullable=True)
-    amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=True)
-
-    invoice: Mapped["Invoice"] = relationship(back_populates="line_items")
-
-class Document(Base):
-    __tablename__ = "documents"
-    id: Mapped[uuid.UUID] = uuid_pk()
-    invoice_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("invoices.id"), nullable=True)
-    doc_type: Mapped[str] = mapped_column(String, nullable=False)  # "invoice" | "policy"
-    chunk_text: Mapped[str] = mapped_column(Text, nullable=False)
-    embedding: Mapped[list[float]] = mapped_column(Vector(1024), nullable=False)
-
-class AgentRun(Base):
-    __tablename__ = "agent_runs"
-    id: Mapped[uuid.UUID] = uuid_pk()
-    invoice_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("invoices.id"), nullable=False)
-    source: Mapped[str] = mapped_column(String, nullable=False, default="live")  # "live" | "eval"
-    transcript: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    decision: Mapped[str] = mapped_column(String, nullable=True)
-    confidence: Mapped[float] = mapped_column(Float, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-
-class AuditLog(Base):
-    __tablename__ = "audit_log"
-    id: Mapped[uuid.UUID] = uuid_pk()
-    invoice_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("invoices.id"), nullable=False)
-    actor: Mapped[str] = mapped_column(String, nullable=False)  # "agent" | "human"
-    action: Mapped[str] = mapped_column(String, nullable=False)
-    before_state: Mapped[dict] = mapped_column(JSONB, nullable=True)
-    after_state: Mapped[dict] = mapped_column(JSONB, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-```
-
-Add `pgvector` to `backend/requirements.txt` (the Python client library, distinct from the Postgres extension image already in Docker Compose):
-
-```
-pgvector
-```
-
-**Step 2: Initialize Alembic**
-
-```bash
-cd backend
-alembic init alembic
-```
-
-**Step 3: Edit `backend/alembic/env.py`** — replace the `target_metadata = None` line and wire in the async engine:
-
-```python
-# add near the top, after existing imports
-import asyncio
-from app.models import Base
-from app.config import settings
-
-target_metadata = Base.metadata
-config.set_main_option("sqlalchemy.url", settings.database_url)
-
-# replace run_migrations_online with:
-from sqlalchemy.ext.asyncio import async_engine_from_config
-
-def do_run_migrations(connection):
-    context.configure(connection=connection, target_metadata=target_metadata)
-    with context.begin_transaction():
-        context.run_migrations()
-
-async def run_migrations_online():
-    connectable = async_engine_from_config(
-        config.get_section(config.config_ini_section),
-        prefix="sqlalchemy.",
-    )
-    async with connectable.connect() as connection:
-        await connection.run_sync(do_run_migrations)
-    await connectable.dispose()
-
-asyncio.run(run_migrations_online())
-```
-
-**Step 4: Enable the pgvector extension before the first migration**
-
-```bash
-docker compose exec db psql -U invoice_agent -d invoice_agent -c "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pg_trgm;"
-```
-
-**Step 5: Generate and run the migration**
-
-```bash
-alembic revision --autogenerate -m "initial schema"
-alembic upgrade head
-```
-
-Expected: a new file under `backend/alembic/versions/`, and `alembic upgrade head` completes without error.
-
-**Step 6: Verify the tables exist**
-
-```bash
-docker compose exec db psql -U invoice_agent -d invoice_agent -c "\dt"
-```
-
-Expected: `vendors`, `invoices`, `line_items`, `documents`, `agent_runs`, `audit_log`.
-
-**Step 7: Commit**
-
-```bash
-git add backend/app/models.py backend/alembic.ini backend/alembic/ backend/requirements.txt
-git commit -m "feat: add SQLAlchemy models and initial Alembic migration"
-```
-
----
-
-### Task 4: FastAPI app skeleton + health check
-
-**Files:**
-- Create: `backend/app/main.py`
-- Test: `backend/tests/test_main.py`
-
-**Step 1: Write the failing test**
-
-```python
-# backend/tests/test_main.py
-from fastapi.testclient import TestClient
-from app.main import app
-
-def test_health_check():
-    client = TestClient(app)
-    response = client.get("/health")
-    assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
-```
-
-**Step 2: Run test to verify it fails**
-
-Run: `pytest tests/test_main.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'app.main'`
-
-**Step 3: Write `backend/app/main.py`**
-
-```python
-from fastapi import FastAPI
-
-app = FastAPI(title="Invoice Agent")
-
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
-```
-
-**Step 4: Run test to verify it passes**
-
-Run: `pytest tests/test_main.py -v`
-Expected: PASS
-
-**Step 5: Commit**
-
-```bash
-git add backend/app/main.py backend/tests/test_main.py
-git commit -m "feat: add FastAPI app skeleton with health check"
-```
-
----
-
-## Phase 1 — Fixtures
-
-### Task 5: Source sample invoices + seed data
+### Task 1: Source sample invoices + AP policy doc
 
 **Files:**
 - Create: `backend/fixtures/invoices/clean_acme.pdf`
 - Create: `backend/fixtures/invoices/clean_globex.pdf`
 - Create: `backend/fixtures/invoices/messy_scanned.pdf`
 - Create: `backend/fixtures/policy/ap_policy.md`
-- Create: `backend/fixtures/seed_vendors.py`
 
-This task is manual sourcing, not TDD — there's no test to write first.
+This task is manual sourcing, not TDD — there's no test to write first, and no infrastructure needed yet.
 
 **Step 1: Get 2-3 clean, born-digital invoice PDFs**
 
-Search "sample invoice PDF" or generate simple ones (a Google Doc/Word doc with invoice fields, exported to PDF works fine). You need real text you can verify extraction against — write down the ground-truth vendor name, amount, due date, and line items for each one somewhere you'll reference later (Task 26 needs this).
+Search "sample invoice PDF" or generate simple ones (a Google Doc/Word doc with invoice fields, exported to PDF works fine). Write down the ground-truth vendor name, amount, due date, and line items for each one somewhere you'll reference later (Task 27 needs this for the eval cases).
 
-Name vendors so one has a naming variant you'll test later, e.g. one PDF says "Acme Inc" — you'll later seed the `vendors` table with "ACME Incorporated" so Task 14's fuzzy match has something real to resolve.
+Name vendors so one has a naming variant you'll test later, e.g. one PDF says "Acme Inc" — later you'll seed a vendor record as "ACME Incorporated" so the `lookup_vendor` tool (Task 16) has something real to fuzzy-resolve.
 
 **Step 2: Get one messy/scanned invoice PDF**
 
-Either photograph/scan a printed invoice at an angle, or find a low-quality scanned sample online. This is what exercises the vision fallback in Task 6.
+Either photograph/scan a printed invoice at an angle, or find a low-quality scanned sample online. This needs to have no usable text layer — it's what exercises the vision fallback in Task 4.
 
 **Step 3: Write a short AP policy doc**
 
@@ -429,43 +47,120 @@ Either photograph/scan a printed invoice at an angle, or find a low-quality scan
 - Bank account details that differ from the vendor's records on file must never be auto-approved — always escalate for manual verification.
 ```
 
-**Step 4: Write vendor seed script**
-
-```python
-# backend/fixtures/seed_vendors.py
-import asyncio
-from app.db import SessionLocal
-from app.models import Vendor
-
-VENDORS = [
-    {"name": "ACME Incorporated", "normalized_name": "acme incorporated", "bank_details": "IBAN GB00ACME00000000000001"},
-    {"name": "Globex Corp", "normalized_name": "globex corp", "bank_details": "IBAN GB00GLBX00000000000002"},
-]
-
-async def seed():
-    async with SessionLocal() as session:
-        for v in VENDORS:
-            session.add(Vendor(**v))
-        await session.commit()
-
-if __name__ == "__main__":
-    asyncio.run(seed())
-```
-
-Run: `cd backend && python -m fixtures.seed_vendors`
-
-**Step 5: Commit**
+**Step 4: Commit**
 
 ```bash
+mkdir -p backend/fixtures/invoices backend/fixtures/policy
 git add backend/fixtures/
-git commit -m "chore: add sample invoice PDFs, AP policy doc, and vendor seed script"
+git commit -m "chore: add sample invoice PDFs and AP policy doc"
 ```
 
 ---
 
-## Phase 2 — Extraction pipeline
+## Phase 1 — Extraction pipeline (no database yet)
 
-### Task 6: Text-layer extraction + usability heuristic
+Everything in this phase is plain Python operating on files. No Postgres, no FastAPI — those get introduced only once something in a later phase actually needs them.
+
+### Task 2: Repo skeleton + minimal config
+
+**Files:**
+- Create: `backend/requirements.txt`
+- Create: `backend/.env.example`
+- Create: `backend/.gitignore`
+- Create: `backend/app/__init__.py`
+- Create: `backend/app/config.py`
+- Create: `backend/tests/__init__.py`
+- Test: `backend/tests/test_config.py`
+
+**Step 1: Create the directory structure**
+
+```bash
+mkdir -p backend/app backend/tests
+touch backend/app/__init__.py backend/tests/__init__.py
+```
+
+**Step 2: Write `backend/requirements.txt`** (extraction-only for now — DB and web libraries get added when Phase 2/3 need them)
+
+```
+anthropic
+pdfplumber
+pydantic-settings
+pytest
+```
+
+**Step 3: Write `backend/.env.example`**
+
+```
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+Copy it: `cp backend/.env.example backend/.env` and fill in a real key.
+
+**Step 4: Write `backend/.gitignore`**
+
+```
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+venv/
+```
+
+**Step 5: Write the failing test**
+
+```python
+# backend/tests/test_config.py
+from app.config import Settings
+
+def test_settings_reads_anthropic_key(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    settings = Settings()
+    assert settings.anthropic_api_key == "sk-test"
+```
+
+**Step 6: Set up the virtualenv**
+
+```bash
+cd backend
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+**Step 7: Run test to verify it fails**
+
+Run: `pytest tests/test_config.py -v`
+Expected: FAIL — `ModuleNotFoundError: No module named 'app.config'`
+
+**Step 8: Write `backend/app/config.py`**
+
+```python
+from pydantic_settings import BaseSettings
+
+class Settings(BaseSettings):
+    anthropic_api_key: str
+
+    class Config:
+        env_file = ".env"
+
+settings = Settings()
+```
+
+**Step 9: Run test to verify it passes**
+
+Run: `pytest tests/test_config.py -v`
+Expected: PASS
+
+**Step 10: Commit**
+
+```bash
+git add backend/requirements.txt backend/.env.example backend/.gitignore backend/app/ backend/tests/
+git commit -m "chore: scaffold backend project with minimal config"
+```
+
+---
+
+### Task 3: Text-layer extraction + usability heuristic
 
 **Files:**
 - Create: `backend/app/extraction/__init__.py`
@@ -532,13 +227,23 @@ git commit -m "feat: add PDF text-layer extraction with usability heuristic"
 
 ---
 
-### Task 7: Vision fallback transcription
+### Task 4: Vision fallback transcription
 
 **Files:**
 - Create: `backend/app/extraction/vision_fallback.py`
+- Create: `backend/pytest.ini`
 - Test: `backend/tests/test_vision_fallback.py`
 
-**Step 1: Write the failing test (integration test, calls real API)**
+**Step 1: Register an `integration` marker for tests that call real external APIs**
+
+```ini
+# backend/pytest.ini
+[pytest]
+markers =
+    integration: tests that call a real external API (costs money, needs API keys)
+```
+
+**Step 2: Write the failing test**
 
 ```python
 # backend/tests/test_vision_fallback.py
@@ -553,20 +258,12 @@ def test_transcribes_scanned_invoice():
     assert any(word in text.lower() for word in ["invoice", "total", "amount", "due"])
 ```
 
-Register the marker in `backend/pytest.ini`:
-
-```ini
-[pytest]
-markers =
-    integration: tests that call a real external API (costs money, needs API keys)
-```
-
-**Step 2: Run test to verify it fails**
+**Step 3: Run test to verify it fails**
 
 Run: `pytest tests/test_vision_fallback.py -v -m integration`
 Expected: FAIL — module doesn't exist
 
-**Step 3: Write `backend/app/extraction/vision_fallback.py`**
+**Step 4: Write `backend/app/extraction/vision_fallback.py`**
 
 ```python
 import base64
@@ -599,12 +296,12 @@ def transcribe_via_vision(pdf_path: str) -> str:
     return response.content[0].text.strip()
 ```
 
-**Step 4: Run test to verify it passes**
+**Step 5: Run test to verify it passes**
 
 Run: `pytest tests/test_vision_fallback.py -v -m integration`
 Expected: PASS (requires `ANTHROPIC_API_KEY` set in `.env`)
 
-**Step 5: Commit**
+**Step 6: Commit**
 
 ```bash
 git add backend/app/extraction/vision_fallback.py backend/tests/test_vision_fallback.py backend/pytest.ini
@@ -613,7 +310,7 @@ git commit -m "feat: add vision-based transcription fallback for scanned invoice
 
 ---
 
-### Task 8: Structured field extraction
+### Task 5: Structured field extraction
 
 **Files:**
 - Create: `backend/app/extraction/fields.py`
@@ -731,7 +428,7 @@ git commit -m "feat: add structured field extraction via Claude tool-calling"
 
 ---
 
-### Task 9: Extraction pipeline orchestrator
+### Task 6: Extraction pipeline orchestrator
 
 **Files:**
 - Create: `backend/app/extraction/pipeline.py`
@@ -793,7 +490,21 @@ def extract_invoice(pdf_path: str) -> ExtractionResult:
 Run: `pytest tests/test_pipeline.py -v -m integration`
 Expected: PASS
 
-**Step 5: Commit**
+**Step 5: Checkpoint — run the pipeline on all three fixtures and read the output**
+
+```bash
+python -c "
+from app.extraction.pipeline import extract_invoice
+for path in ['fixtures/invoices/clean_acme.pdf', 'fixtures/invoices/clean_globex.pdf', 'fixtures/invoices/messy_scanned.pdf']:
+    r = extract_invoice(path)
+    print(path, '-> vision fallback:', r.used_vision_fallback)
+    print(' ', r.fields)
+"
+```
+
+Compare against the ground truth you wrote down in Task 1. This is the extraction pipeline fully working end-to-end on real messy documents, with zero database involved — everything from here forward builds on top of it.
+
+**Step 6: Commit**
 
 ```bash
 git add backend/app/extraction/pipeline.py backend/tests/test_pipeline.py
@@ -802,9 +513,235 @@ git commit -m "feat: wire text-layer/vision/field-extraction into one pipeline"
 
 ---
 
-## Phase 3 — RAG
+## Phase 2 — RAG (Postgres/pgvector introduced here)
 
-### Task 10: Chunking
+This is the first point where anything needs to persist, so it's the first point where a database shows up.
+
+### Task 7: Postgres via Docker Compose + DB engine
+
+**Files:**
+- Create: `backend/docker-compose.yml`
+- Modify: `backend/.env.example`
+- Modify: `backend/requirements.txt`
+- Modify: `backend/app/config.py`
+- Create: `backend/app/db.py`
+- Modify: `backend/tests/test_config.py`
+
+**Step 1: Write `backend/docker-compose.yml`**
+
+```yaml
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: invoice_agent
+      POSTGRES_PASSWORD: invoice_agent
+      POSTGRES_DB: invoice_agent
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+volumes:
+  pgdata:
+```
+
+**Step 2: Start it**
+
+```bash
+cd backend
+docker compose up -d
+```
+
+Expected: `docker compose ps` shows the `db` service healthy on port 5432.
+
+**Step 3: Extend `backend/.env.example`**
+
+```
+ANTHROPIC_API_KEY=sk-ant-...
+DATABASE_URL=postgresql+asyncpg://invoice_agent:invoice_agent@localhost:5432/invoice_agent
+VOYAGE_API_KEY=pa-...
+```
+
+Update your real `.env` to match.
+
+**Step 4: Extend `backend/requirements.txt`**
+
+```
+sqlalchemy>=2.0
+asyncpg
+alembic
+pgvector
+voyageai
+pytest-asyncio
+```
+
+Re-run `pip install -r requirements.txt`.
+
+**Step 5: Extend the failing test**
+
+```python
+# backend/tests/test_config.py — add this test to the existing file
+def test_settings_reads_database_and_voyage(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+    monkeypatch.setenv("VOYAGE_API_KEY", "pa-test")
+    settings = Settings()
+    assert settings.database_url == "postgresql+asyncpg://u:p@localhost/db"
+    assert settings.voyage_api_key == "pa-test"
+```
+
+**Step 6: Run test to verify it fails**
+
+Run: `pytest tests/test_config.py -v`
+Expected: FAIL — `Settings` has no field `database_url`
+
+**Step 7: Extend `backend/app/config.py`**
+
+```python
+from pydantic_settings import BaseSettings
+
+class Settings(BaseSettings):
+    anthropic_api_key: str
+    database_url: str
+    voyage_api_key: str
+
+    class Config:
+        env_file = ".env"
+
+settings = Settings()
+```
+
+**Step 8: Write `backend/app/db.py`**
+
+```python
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+from app.config import settings
+
+engine = create_async_engine(settings.database_url, echo=False)
+SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
+
+async def get_session() -> AsyncSession:
+    async with SessionLocal() as session:
+        yield session
+```
+
+**Step 9: Run test to verify it passes**
+
+Run: `pytest tests/test_config.py -v`
+Expected: PASS
+
+**Step 10: Commit**
+
+```bash
+git add backend/docker-compose.yml backend/.env.example backend/requirements.txt backend/app/config.py backend/app/db.py backend/tests/test_config.py
+git commit -m "feat: add Postgres/pgvector via Docker Compose and async DB engine"
+```
+
+---
+
+### Task 8: `documents` model + first migration
+
+**Files:**
+- Create: `backend/app/models.py`
+- Create: `backend/alembic.ini`
+- Create: `backend/alembic/env.py`
+- Create: `backend/alembic/versions/0001_documents.py`
+
+**Step 1: Write `backend/app/models.py`** — just `Document` for now. `invoice_id` is a plain UUID column with no foreign key yet, since `invoices` doesn't exist until Task 13 — the FK constraint gets added then, once there's a table for it to reference.
+
+```python
+import uuid
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy import Text
+from pgvector.sqlalchemy import Vector
+
+class Base(DeclarativeBase):
+    pass
+
+def uuid_pk() -> Mapped[uuid.UUID]:
+    return mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+class Document(Base):
+    __tablename__ = "documents"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=True)
+    doc_type: Mapped[str] = mapped_column(Text, nullable=False)  # "invoice" | "policy"
+    chunk_text: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(Vector(1024), nullable=False)
+```
+
+**Step 2: Initialize Alembic**
+
+```bash
+cd backend
+alembic init alembic
+```
+
+**Step 3: Edit `backend/alembic/env.py`** — replace the `target_metadata = None` line and wire in the async engine:
+
+```python
+# add near the top, after existing imports
+import asyncio
+from app.models import Base
+from app.config import settings
+
+target_metadata = Base.metadata
+config.set_main_option("sqlalchemy.url", settings.database_url)
+
+# replace run_migrations_online with:
+from sqlalchemy.ext.asyncio import async_engine_from_config
+
+def do_run_migrations(connection):
+    context.configure(connection=connection, target_metadata=target_metadata)
+    with context.begin_transaction():
+        context.run_migrations()
+
+async def run_migrations_online():
+    connectable = async_engine_from_config(
+        config.get_section(config.config_ini_section),
+        prefix="sqlalchemy.",
+    )
+    async with connectable.connect() as connection:
+        await connection.run_sync(do_run_migrations)
+    await connectable.dispose()
+
+asyncio.run(run_migrations_online())
+```
+
+**Step 4: Enable the pgvector extension before the first migration**
+
+```bash
+docker compose exec db psql -U invoice_agent -d invoice_agent -c "CREATE EXTENSION IF NOT EXISTS vector;"
+```
+
+**Step 5: Generate and run the migration**
+
+```bash
+alembic revision --autogenerate -m "add documents table"
+alembic upgrade head
+```
+
+Expected: a new file under `backend/alembic/versions/`, and `alembic upgrade head` completes without error.
+
+**Step 6: Verify the table exists**
+
+```bash
+docker compose exec db psql -U invoice_agent -d invoice_agent -c "\dt"
+```
+
+Expected: `documents`.
+
+**Step 7: Commit**
+
+```bash
+git add backend/app/models.py backend/alembic.ini backend/alembic/
+git commit -m "feat: add Document model and initial migration"
+```
+
+---
+
+### Task 9: Chunking
 
 **Files:**
 - Create: `backend/app/rag/__init__.py`
@@ -869,7 +806,7 @@ git commit -m "feat: add fixed-size invoice chunking and paragraph-based policy 
 
 ---
 
-### Task 11: Voyage embeddings client
+### Task 10: Voyage embeddings client
 
 **Files:**
 - Create: `backend/app/rag/embeddings.py`
@@ -907,7 +844,7 @@ def embed_texts(texts: list[str], input_type: str = "document") -> list[list[flo
     return result.embeddings
 ```
 
-Note: `input_type="document"` when embedding chunks to store, `input_type="query"` when embedding a search query in Task 13 — Voyage tunes the embedding differently for each.
+Note: `input_type="document"` when embedding chunks to store, `input_type="query"` when embedding a search query in Task 12 — Voyage tunes the embedding differently for each.
 
 **Step 4: Run test to verify it passes**
 
@@ -923,10 +860,11 @@ git commit -m "feat: add Voyage AI embeddings client wrapper"
 
 ---
 
-### Task 12: Store chunks in pgvector
+### Task 11: Store chunks in pgvector
 
 **Files:**
 - Create: `backend/app/rag/store.py`
+- Create: `backend/tests/conftest.py`
 - Test: `backend/tests/test_store.py`
 
 **Step 1: Write the failing test**
@@ -938,6 +876,7 @@ from sqlalchemy import select
 from app.rag.store import store_document_chunks
 from app.models import Document
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_store_document_chunks(db_session):
     chunks = ["chunk one text", "chunk two text"]
@@ -948,10 +887,9 @@ async def test_store_document_chunks(db_session):
     assert len(rows[0].embedding) == 1024
 ```
 
-Add a `db_session` fixture in `backend/tests/conftest.py` (used by this and later DB-touching tests):
+**Step 2: Write `backend/tests/conftest.py`** — this `db_session` fixture is reused by every DB-touching test from here on:
 
 ```python
-# backend/tests/conftest.py
 import pytest_asyncio
 from app.db import SessionLocal
 
@@ -962,12 +900,12 @@ async def db_session():
         await session.rollback()
 ```
 
-**Step 2: Run test to verify it fails**
+**Step 3: Run test to verify it fails**
 
 Run: `pytest tests/test_store.py -v -m integration`
 Expected: FAIL — module doesn't exist
 
-**Step 3: Write `backend/app/rag/store.py`**
+**Step 4: Write `backend/app/rag/store.py`**
 
 ```python
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -987,14 +925,12 @@ async def store_document_chunks(
     return documents
 ```
 
-Mark this test `@pytest.mark.integration` too (it calls the real Voyage API) and run it the same way as Task 11.
-
-**Step 4: Run test to verify it passes**
+**Step 5: Run test to verify it passes**
 
 Run: `pytest tests/test_store.py -v -m integration`
 Expected: PASS
 
-**Step 5: Commit**
+**Step 6: Commit**
 
 ```bash
 git add backend/app/rag/store.py backend/tests/test_store.py backend/tests/conftest.py
@@ -1003,7 +939,7 @@ git commit -m "feat: store document chunks with embeddings in pgvector"
 
 ---
 
-### Task 13: Similarity search (`search_documents`)
+### Task 12: Similarity search (`search_documents`)
 
 **Files:**
 - Create: `backend/app/rag/search.py`
@@ -1061,7 +997,32 @@ async def search_documents(
 Run: `pytest tests/test_search.py -v -m integration`
 Expected: PASS
 
-**Step 5: Commit**
+**Step 5: Checkpoint — embed your real policy doc and an invoice, and search it**
+
+```bash
+python -c "
+import asyncio
+from app.db import SessionLocal
+from app.rag.chunking import chunk_policy_text
+from app.rag.store import store_document_chunks
+from app.rag.search import search_documents
+
+async def main():
+    with open('fixtures/policy/ap_policy.md') as f:
+        chunks = chunk_policy_text(f.read())
+    async with SessionLocal() as session:
+        await store_document_chunks(session, invoice_id=None, doc_type='policy', chunks=chunks)
+        results = await search_documents(session, query='what if the invoice is over ten thousand dollars')
+        for r in results:
+            print(r.chunk_text)
+
+asyncio.run(main())
+"
+```
+
+Expected: the $10,000/second-approval policy chunk comes back near the top. This is RAG working end-to-end on your real policy doc before the agent ever touches it.
+
+**Step 6: Commit**
 
 ```bash
 git add backend/app/rag/search.py backend/tests/test_search.py
@@ -1070,11 +1031,177 @@ git commit -m "feat: add pgvector similarity search over invoice and policy chun
 
 ---
 
-## Phase 4 — Agent, tools, and eval harness
+## Phase 3 — Agent, tools, and eval harness
 
-This phase is deliberately interleaved: each tool gets built, then its eval case gets written against it, per your request to do evals concurrently rather than after.
+This is where the rest of the schema shows up — vendors, invoices, line items, purchase orders, and the tables the agent's tools and the eval harness both read and write. Tools get built one at a time, each followed immediately by the eval case that exercises it, per your request to build evals concurrently rather than after the fact.
 
-### Task 14: Agent run transcript recording
+### Task 13: Core schema (vendors, invoices, line items, agent runs, audit log)
+
+**Files:**
+- Modify: `backend/app/models.py`
+- Create: `backend/alembic/versions/0002_core_schema.py`
+
+**Step 1: Extend `backend/app/models.py`** — add these models, and update `Document.invoice_id` to become a real foreign key now that `invoices` exists:
+
+```python
+# add these imports at the top
+from datetime import datetime, date
+from sqlalchemy import String, Numeric, Date, DateTime, ForeignKey, Float
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import relationship
+
+# change Document.invoice_id from a plain UUID column to:
+    invoice_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("invoices.id"), nullable=True)
+
+# then append these new models:
+class Vendor(Base):
+    __tablename__ = "vendors"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    normalized_name: Mapped[str] = mapped_column(String, nullable=False)
+    bank_details: Mapped[str] = mapped_column(String, nullable=True)
+
+class Invoice(Base):
+    __tablename__ = "invoices"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    vendor_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("vendors.id"), nullable=True)
+    invoice_number: Mapped[str] = mapped_column(String, nullable=True)
+    amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=True)
+    due_date: Mapped[date] = mapped_column(Date, nullable=True)
+    po_number: Mapped[str] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    confidence_score: Mapped[float] = mapped_column(Float, nullable=True)
+    raw_pdf_path: Mapped[str] = mapped_column(String, nullable=False)
+    raw_text: Mapped[str] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    line_items: Mapped[list["LineItem"]] = relationship(back_populates="invoice")
+
+class LineItem(Base):
+    __tablename__ = "line_items"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    invoice_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("invoices.id"), nullable=False)
+    description: Mapped[str] = mapped_column(String, nullable=True)
+    amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=True)
+
+    invoice: Mapped["Invoice"] = relationship(back_populates="line_items")
+
+class AgentRun(Base):
+    __tablename__ = "agent_runs"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    invoice_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("invoices.id"), nullable=False)
+    source: Mapped[str] = mapped_column(String, nullable=False, default="live")  # "live" | "eval"
+    transcript: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    decision: Mapped[str] = mapped_column(String, nullable=True)
+    confidence: Mapped[float] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+class AuditLog(Base):
+    __tablename__ = "audit_log"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    invoice_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("invoices.id"), nullable=False)
+    actor: Mapped[str] = mapped_column(String, nullable=False)  # "agent" | "human"
+    action: Mapped[str] = mapped_column(String, nullable=False)
+    before_state: Mapped[dict] = mapped_column(JSONB, nullable=True)
+    after_state: Mapped[dict] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+```
+
+**Step 2: Add `CONFIDENCE_ESCALATION_THRESHOLD` to config** — extend `backend/.env.example`:
+
+```
+CONFIDENCE_ESCALATION_THRESHOLD=0.7
+```
+
+Extend `backend/app/config.py`:
+
+```python
+class Settings(BaseSettings):
+    anthropic_api_key: str
+    database_url: str
+    voyage_api_key: str
+    confidence_escalation_threshold: float = 0.7
+
+    class Config:
+        env_file = ".env"
+```
+
+**Step 3: Enable `pg_trgm`, needed by `lookup_vendor` in Task 16**
+
+```bash
+docker compose exec db psql -U invoice_agent -d invoice_agent -c "CREATE EXTENSION IF NOT EXISTS pg_trgm;"
+```
+
+**Step 4: Generate and run the migration**
+
+```bash
+alembic revision --autogenerate -m "add core schema"
+alembic upgrade head
+```
+
+Expected: the autogenerated migration adds `vendors`, `invoices`, `line_items`, `agent_runs`, `audit_log`, and a foreign key constraint on `documents.invoice_id`.
+
+**Step 5: Verify**
+
+```bash
+docker compose exec db psql -U invoice_agent -d invoice_agent -c "\dt"
+```
+
+Expected: `vendors`, `invoices`, `line_items`, `documents`, `agent_runs`, `audit_log`.
+
+**Step 6: Commit**
+
+```bash
+git add backend/app/models.py backend/app/config.py backend/.env.example backend/alembic/versions/
+git commit -m "feat: add core schema (vendors, invoices, line_items, agent_runs, audit_log)"
+```
+
+---
+
+### Task 14: Seed vendor data
+
+**Files:**
+- Create: `backend/fixtures/seed_vendors.py`
+
+**Step 1: Write the seed script**
+
+```python
+# backend/fixtures/seed_vendors.py
+import asyncio
+from app.db import SessionLocal
+from app.models import Vendor
+
+VENDORS = [
+    {"name": "ACME Incorporated", "normalized_name": "acme incorporated", "bank_details": "IBAN GB00ACME00000000000001"},
+    {"name": "Globex Corp", "normalized_name": "globex corp", "bank_details": "IBAN GB00GLBX00000000000002"},
+]
+
+async def seed():
+    async with SessionLocal() as session:
+        for v in VENDORS:
+            session.add(Vendor(**v))
+        await session.commit()
+
+if __name__ == "__main__":
+    asyncio.run(seed())
+```
+
+**Step 2: Run it**
+
+```bash
+cd backend && python -m fixtures.seed_vendors
+```
+
+**Step 3: Commit**
+
+```bash
+git add backend/fixtures/seed_vendors.py
+git commit -m "chore: add vendor seed script"
+```
+
+---
+
+### Task 15: Agent run transcript recording
 
 **Files:**
 - Create: `backend/app/agent/__init__.py`
@@ -1115,6 +1242,8 @@ async def seeded_invoice(db_session):
     await db_session.refresh(invoice)
     return invoice
 ```
+
+(Also add `import pytest_asyncio` at the top of `conftest.py` if it isn't already imported there.)
 
 **Step 2: Run test to verify it fails**
 
@@ -1172,7 +1301,7 @@ git commit -m "feat: add agent run transcript recording"
 
 ---
 
-### Task 15: Tool — `lookup_vendor` + eval case 3 (vendor name drift)
+### Task 16: Tool — `lookup_vendor` (+ sets up eval case 3, vendor name drift)
 
 **Files:**
 - Create: `backend/app/agent/tools.py`
@@ -1261,7 +1390,7 @@ git commit -m "feat: add lookup_vendor tool with pg_trgm fuzzy matching"
 
 ---
 
-### Task 16: Tool — `get_invoice_history`
+### Task 17: Tool — `get_invoice_history`
 
 **Files:**
 - Modify: `backend/app/agent/tools.py`
@@ -1333,7 +1462,7 @@ git commit -m "feat: add get_invoice_history tool"
 
 ---
 
-### Task 17: Tool — `check_duplicate_invoice`
+### Task 18: Tool — `check_duplicate_invoice`
 
 **Files:**
 - Modify: `backend/app/agent/tools.py`
@@ -1388,13 +1517,13 @@ git commit -m "feat: add check_duplicate_invoice tool"
 
 ---
 
-### Task 18: Tool — `get_purchase_order`
+### Task 19: Tool — `get_purchase_order`
 
 **Files:**
-- Create: `backend/app/models.py` — add a minimal `PurchaseOrder` table (this project fakes a PO system rather than integrating a real one)
+- Modify: `backend/app/models.py` — add a minimal `PurchaseOrder` table (this project fakes a PO system rather than integrating a real one)
 - Modify: `backend/app/agent/tools.py`
 - Modify: `backend/tests/test_tools.py`
-- Create: `backend/alembic/versions/0002_purchase_orders.py`
+- Create: `backend/alembic/versions/0003_purchase_orders.py`
 
 **Step 1: Add the model**
 
@@ -1473,7 +1602,7 @@ git commit -m "feat: add purchase_orders table and get_purchase_order tool"
 
 ---
 
-### Task 19: Tool — `search_documents` (wraps RAG)
+### Task 20: Tool — `search_documents` (wraps RAG)
 
 **Files:**
 - Modify: `backend/app/agent/tools.py`
@@ -1506,7 +1635,7 @@ async def search_documents_tool(session: AsyncSession, query: str, invoice_id: s
     return {"results": [{"text": d.chunk_text, "doc_type": d.doc_type} for d in docs]}
 ```
 
-Named `search_documents_tool` (not `search_documents`) to avoid clashing with the RAG-layer function it wraps — the tool-use loop in Task 20 exposes this one to the agent.
+Named `search_documents_tool` (not `search_documents`) to avoid clashing with the RAG-layer function it wraps — the tool-use loop in Task 22 exposes this one to the agent.
 
 **Step 4: Run test to verify it passes**
 
@@ -1522,7 +1651,7 @@ git commit -m "feat: add search_documents agent tool wrapping RAG similarity sea
 
 ---
 
-### Task 20: Tool — `submit_recommendation` + confidence escalation
+### Task 21: Tool — `submit_recommendation` + confidence escalation
 
 **Files:**
 - Modify: `backend/app/agent/tools.py`
@@ -1577,7 +1706,7 @@ git commit -m "feat: add submit_recommendation tool with server-side confidence 
 
 ---
 
-### Task 21: Tool-use loop orchestrator
+### Task 22: Tool-use loop orchestrator
 
 **Files:**
 - Create: `backend/app/agent/prompts.py`
@@ -1745,7 +1874,7 @@ git commit -m "feat: add tool-use loop orchestrator wiring all agent tools toget
 
 ---
 
-### Task 22: Run the agent live on a real invoice (manual checkpoint, no new test)
+### Task 23: Run the agent live on a real invoice (manual checkpoint, no new test)
 
 **Files:** none created — this is a manual verification step before moving to the eval harness.
 
@@ -1794,7 +1923,7 @@ cd backend && python scratch_run.py
 
 ---
 
-### Task 23: Eval harness — fixture format + clean-state runner
+### Task 24: Eval harness — fixture format + clean-state runner
 
 **Files:**
 - Create: `backend/app/eval/__init__.py`
@@ -1917,7 +2046,7 @@ git commit -m "feat: add eval harness with per-trial clean-state seeding"
 
 ---
 
-### Task 24: Code-based graders
+### Task 25: Code-based graders
 
 **Files:**
 - Create: `backend/app/eval/graders.py`
@@ -1984,7 +2113,7 @@ git commit -m "feat: add code-based outcome and tool-call graders"
 
 ---
 
-### Task 25: LLM groundedness grader
+### Task 26: LLM groundedness grader
 
 **Files:**
 - Modify: `backend/app/eval/graders.py`
@@ -2066,14 +2195,15 @@ git commit -m "feat: add LLM-rubric groundedness grader for agent reasoning"
 
 ---
 
-### Task 26: Write the 9 eval cases
+### Task 27: Write the 9 eval cases
 
 **Files:**
 - Create: `backend/app/eval/suite.py`
+- Create: `backend/app/eval/report.py`
 
 **Step 1: Write the case definitions**
 
-Use the ground-truth data you recorded in Task 5 for your real fixture invoices where relevant, and synthetic data for the rest. Each case seeds exactly what it needs to test one thing.
+Use the ground-truth data you recorded in Task 1 for your real fixture invoices where relevant, and synthetic data for the rest. Each case seeds exactly what it needs to test one thing.
 
 ```python
 # backend/app/eval/suite.py
@@ -2194,13 +2324,37 @@ git commit -m "feat: add 9 balanced eval cases and pass@1/pass^k reporting"
 
 ---
 
-### Task 27: `POST /eval/run` endpoint
+### Task 28: FastAPI app + `POST /eval/run` endpoint
 
 **Files:**
-- Modify: `backend/app/main.py`
+- Create: `backend/app/main.py`
+- Modify: `backend/requirements.txt`
+- Test: `backend/tests/test_main.py`
 - Test: `backend/tests/test_eval_endpoint.py`
 
-**Step 1: Write the failing test**
+This is the first time FastAPI shows up in the project — everything up to now has been runnable as plain scripts. It's introduced now because the eval harness (and later, the dashboard) is the first thing that actually needs an HTTP interface.
+
+**Step 1: Extend `backend/requirements.txt`**
+
+```
+fastapi
+uvicorn[standard]
+httpx
+```
+
+**Step 2: Write the failing tests**
+
+```python
+# backend/tests/test_main.py
+from fastapi.testclient import TestClient
+from app.main import app
+
+def test_health_check():
+    client = TestClient(app)
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+```
 
 ```python
 # backend/tests/test_eval_endpoint.py
@@ -2220,18 +2374,25 @@ async def test_eval_run_endpoint_returns_case_results():
     assert "pass_at_1" in body["cases"][0]
 ```
 
-**Step 2: Run test to verify it fails**
+**Step 3: Run tests to verify they fail**
 
-Run: `pytest tests/test_eval_endpoint.py -v -m integration`
-Expected: FAIL — 404, route doesn't exist
+Run: `pytest tests/test_main.py tests/test_eval_endpoint.py -v -m integration`
+Expected: FAIL — module doesn't exist
 
-**Step 3: Add to `backend/app/main.py`**
+**Step 4: Write `backend/app/main.py`**
 
 ```python
+from fastapi import FastAPI
 from app.db import SessionLocal
 from app.eval.suite import CASES
 from app.eval.harness import run_case
 from app.eval.graders import grade_outcome, grade_tool_calls
+
+app = FastAPI(title="Invoice Agent")
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
 
 @app.post("/eval/run")
 async def eval_run():
@@ -2251,16 +2412,16 @@ async def eval_run():
     return {"cases": results}
 ```
 
-**Step 4: Run test to verify it passes**
+**Step 5: Run tests to verify they pass**
 
-Run: `pytest tests/test_eval_endpoint.py -v -m integration`
+Run: `pytest tests/test_main.py tests/test_eval_endpoint.py -v -m integration`
 Expected: PASS
 
-**Step 5: Commit**
+**Step 6: Commit**
 
 ```bash
-git add backend/app/main.py backend/tests/test_eval_endpoint.py
-git commit -m "feat: add POST /eval/run endpoint"
+git add backend/app/main.py backend/requirements.txt backend/tests/test_main.py backend/tests/test_eval_endpoint.py
+git commit -m "feat: add FastAPI app with health check and POST /eval/run"
 ```
 
 ---
