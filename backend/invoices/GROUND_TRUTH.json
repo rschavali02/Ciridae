@@ -1,0 +1,607 @@
+[
+  {
+    "file": "invoice_01.pdf",
+    "vendor": "Acme Inc",
+    "invoice_number": "INV-1000",
+    "date_issued": "2026-03-13",
+    "due_date": "2026-03-28",
+    "terms": "Net 45",
+    "items": [
+      [
+        "Web development",
+        9,
+        102.83
+      ],
+      [
+        "Software license",
+        9,
+        208.93
+      ]
+    ],
+    "subtotal": 2805.84,
+    "tax": 0.0,
+    "balance_due": 2805.84
+  },
+  {
+    "file": "invoice_02.pdf",
+    "vendor": "Globex Corp",
+    "invoice_number": "INV-1001",
+    "date_issued": "2026-02-08",
+    "due_date": "2026-02-23",
+    "terms": "Due on receipt",
+    "items": [
+      [
+        "Security audit",
+        1,
+        747.63
+      ],
+      [
+        "Graphic design",
+        4,
+        574.95
+      ],
+      [
+        "Software license",
+        10,
+        535.28
+      ],
+      [
+        "Software license",
+        4,
+        60.99
+      ],
+      [
+        "Hardware maintenance",
+        5,
+        388.84
+      ],
+      [
+        "Graphic design",
+        10,
+        291.46
+      ]
+    ],
+    "subtotal": 13502.99,
+    "tax": 675.15,
+    "balance_due": 14178.14
+  },
+  {
+    "file": "invoice_03.pdf",
+    "vendor": "Initech LLC",
+    "invoice_number": "INV-1002",
+    "date_issued": "2026-06-04",
+    "due_date": "2026-06-28",
+    "terms": "Net 30",
+    "items": [
+      [
+        "Software license",
+        10,
+        201.24
+      ],
+      [
+        "Security audit",
+        6,
+        429.73
+      ]
+    ],
+    "subtotal": 4590.78,
+    "tax": 367.26,
+    "balance_due": 4958.04
+  },
+  {
+    "file": "invoice_04.pdf",
+    "vendor": "Umbrella Supply Co",
+    "invoice_number": "INV-1003",
+    "date_issued": "2026-04-26",
+    "due_date": "2026-04-28",
+    "terms": "Net 45",
+    "items": [
+      [
+        "Web development",
+        10,
+        284.22
+      ],
+      [
+        "Technical writing",
+        6,
+        661.91
+      ],
+      [
+        "Shipping and handling",
+        10,
+        882.55
+      ]
+    ],
+    "subtotal": 15639.16,
+    "tax": 0.0,
+    "balance_due": 15639.16
+  },
+  {
+    "file": "invoice_05.pdf",
+    "vendor": "Stark Industries",
+    "invoice_number": "INV-1004",
+    "date_issued": "2026-03-25",
+    "due_date": "2026-03-28",
+    "terms": "Due on receipt",
+    "items": [
+      [
+        "Technical writing",
+        7,
+        54.5
+      ],
+      [
+        "Web development",
+        9,
+        524.26
+      ],
+      [
+        "Equipment rental",
+        6,
+        631.86
+      ]
+    ],
+    "subtotal": 8891.0,
+    "tax": 889.1,
+    "balance_due": 9780.1
+  },
+  {
+    "file": "invoice_06.pdf",
+    "vendor": "Wayne Logistics",
+    "invoice_number": "INV-1005",
+    "date_issued": "2026-02-27",
+    "due_date": "2026-02-28",
+    "terms": "Due on receipt",
+    "items": [
+      [
+        "Technical writing",
+        2,
+        73.39
+      ],
+      [
+        "Shipping and handling",
+        10,
+        893.92
+      ],
+      [
+        "Project management",
+        5,
+        650.63
+      ],
+      [
+        "Custom integration",
+        1,
+        847.77
+      ]
+    ],
+    "subtotal": 13186.9,
+    "tax": 923.08,
+    "balance_due": 14109.98
+  },
+  {
+    "file": "invoice_07.pdf",
+    "vendor": "Hooli Systems",
+    "invoice_number": "INV-1006",
+    "date_issued": "2026-08-02",
+    "due_date": "2026-08-17",
+    "terms": "Net 15",
+    "items": [
+      [
+        "Hardware maintenance",
+        4,
+        370.15
+      ],
+      [
+        "Technical writing",
+        2,
+        166.4
+      ],
+      [
+        "Data migration",
+        9,
+        264.5
+      ],
+      [
+        "Hardware maintenance",
+        7,
+        780.31
+      ]
+    ],
+    "subtotal": 9656.07,
+    "tax": 675.92,
+    "balance_due": 10331.99
+  },
+  {
+    "file": "invoice_08.pdf",
+    "vendor": "Wonka Manufacturing",
+    "invoice_number": "INV-1007",
+    "date_issued": "2026-11-13",
+    "due_date": "2026-11-28",
+    "terms": "Net 45",
+    "items": [
+      [
+        "Web development",
+        3,
+        153.14
+      ],
+      [
+        "Training session",
+        1,
+        446.77
+      ],
+      [
+        "Server hosting",
+        5,
+        268.1
+      ]
+    ],
+    "subtotal": 2246.69,
+    "tax": 112.33,
+    "balance_due": 2359.02
+  },
+  {
+    "file": "invoice_09.pdf",
+    "vendor": "Soylent Foods Co",
+    "invoice_number": "INV-1008",
+    "date_issued": "2026-10-19",
+    "due_date": "2026-10-28",
+    "terms": "Net 45",
+    "items": [
+      [
+        "Software license",
+        8,
+        811.59
+      ],
+      [
+        "Data migration",
+        7,
+        371.1
+      ],
+      [
+        "Graphic design",
+        8,
+        578.17
+      ]
+    ],
+    "subtotal": 13715.78,
+    "tax": 0.0,
+    "balance_due": 13715.78
+  },
+  {
+    "file": "invoice_10.pdf",
+    "vendor": "Cyberdyne Hardware",
+    "invoice_number": "INV-1009",
+    "date_issued": "2026-04-15",
+    "due_date": "2026-04-28",
+    "terms": "Net 15",
+    "items": [
+      [
+        "Equipment rental",
+        10,
+        66.27
+      ],
+      [
+        "Consulting services",
+        10,
+        153.11
+      ]
+    ],
+    "subtotal": 2193.8,
+    "tax": 0.0,
+    "balance_due": 2193.8
+  },
+  {
+    "file": "invoice_11.pdf",
+    "vendor": "Massive Dynamic",
+    "invoice_number": "INV-1010",
+    "date_issued": "2026-02-28",
+    "due_date": "2026-02-28",
+    "terms": "Net 15",
+    "items": [
+      [
+        "Data migration",
+        3,
+        578.28
+      ],
+      [
+        "Custom integration",
+        10,
+        340.46
+      ],
+      [
+        "Graphic design",
+        2,
+        767.06
+      ],
+      [
+        "Project management",
+        8,
+        445.77
+      ],
+      [
+        "Web development",
+        3,
+        109.93
+      ],
+      [
+        "Equipment rental",
+        5,
+        441.19
+      ]
+    ],
+    "subtotal": 12775.46,
+    "tax": 638.77,
+    "balance_due": 13414.23
+  },
+  {
+    "file": "invoice_12.pdf",
+    "vendor": "Vandelay Industries",
+    "invoice_number": "INV-1011",
+    "date_issued": "2026-04-17",
+    "due_date": "2026-04-28",
+    "terms": "Net 15",
+    "items": [
+      [
+        "Consulting services",
+        9,
+        282.32
+      ],
+      [
+        "Web development",
+        5,
+        476.19
+      ],
+      [
+        "Server hosting",
+        6,
+        699.31
+      ]
+    ],
+    "subtotal": 9117.69,
+    "tax": 911.77,
+    "balance_due": 10029.46
+  },
+  {
+    "file": "invoice_13.pdf",
+    "vendor": "Pied Piper Tech",
+    "invoice_number": "INV-1012",
+    "date_issued": "2026-11-08",
+    "due_date": "2026-11-28",
+    "terms": "Net 45",
+    "items": [
+      [
+        "Training session",
+        7,
+        671.09
+      ],
+      [
+        "Training session",
+        4,
+        475.52
+      ],
+      [
+        "Custom integration",
+        1,
+        890.85
+      ]
+    ],
+    "subtotal": 7490.56,
+    "tax": 524.34,
+    "balance_due": 8014.9
+  },
+  {
+    "file": "invoice_14.pdf",
+    "vendor": "Aperture Materials",
+    "invoice_number": "INV-1013",
+    "date_issued": "2026-04-23",
+    "due_date": "2026-04-28",
+    "terms": "Net 45",
+    "items": [
+      [
+        "Project management",
+        6,
+        860.4
+      ],
+      [
+        "Custom integration",
+        2,
+        214.01
+      ],
+      [
+        "Training session",
+        8,
+        193.1
+      ],
+      [
+        "Onsite support",
+        8,
+        569.18
+      ]
+    ],
+    "subtotal": 11688.66,
+    "tax": 1168.87,
+    "balance_due": 12857.53
+  },
+  {
+    "file": "invoice_15.pdf",
+    "vendor": "Gringotts Consulting",
+    "invoice_number": "INV-1014",
+    "date_issued": "2026-11-12",
+    "due_date": "2026-11-28",
+    "terms": "Due on receipt",
+    "items": [
+      [
+        "Graphic design",
+        7,
+        708.43
+      ],
+      [
+        "Onsite support",
+        8,
+        802.33
+      ]
+    ],
+    "subtotal": 11377.65,
+    "tax": 910.21,
+    "balance_due": 12287.86
+  },
+  {
+    "file": "invoice_16.pdf",
+    "vendor": "Oscorp Chemicals",
+    "invoice_number": "INV-1015",
+    "date_issued": "2026-12-13",
+    "due_date": "2026-12-28",
+    "terms": "Net 15",
+    "items": [
+      [
+        "Web development",
+        3,
+        169.6
+      ],
+      [
+        "Hardware maintenance",
+        1,
+        153.01
+      ],
+      [
+        "Project management",
+        3,
+        558.18
+      ],
+      [
+        "Technical writing",
+        6,
+        157.2
+      ],
+      [
+        "Hardware maintenance",
+        1,
+        32.53
+      ]
+    ],
+    "subtotal": 3312.08,
+    "tax": 0.0,
+    "balance_due": 3312.08
+  },
+  {
+    "file": "invoice_17.pdf",
+    "vendor": "Tyrell Robotics",
+    "invoice_number": "INV-1016",
+    "date_issued": "2026-07-28",
+    "due_date": "2026-07-28",
+    "terms": "Net 30",
+    "items": [
+      [
+        "Consulting services",
+        5,
+        207.25
+      ],
+      [
+        "Training session",
+        10,
+        306.87
+      ],
+      [
+        "Security audit",
+        3,
+        73.6
+      ]
+    ],
+    "subtotal": 4325.75,
+    "tax": 302.8,
+    "balance_due": 4628.55
+  },
+  {
+    "file": "invoice_18.pdf",
+    "vendor": "Monarch Solutions",
+    "invoice_number": "INV-1017",
+    "date_issued": "2026-09-05",
+    "due_date": "2026-09-28",
+    "terms": "Due on receipt",
+    "items": [
+      [
+        "Consulting services",
+        8,
+        703.33
+      ],
+      [
+        "Consulting services",
+        3,
+        171.67
+      ],
+      [
+        "Technical writing",
+        10,
+        658.17
+      ]
+    ],
+    "subtotal": 12723.35,
+    "tax": 1272.34,
+    "balance_due": 13995.69
+  },
+  {
+    "file": "invoice_19.pdf",
+    "vendor": "Prestige Worldwide",
+    "invoice_number": "INV-1018",
+    "date_issued": "2026-11-17",
+    "due_date": "2026-11-28",
+    "terms": "Net 45",
+    "items": [
+      [
+        "Technical writing",
+        2,
+        797.24
+      ],
+      [
+        "Software license",
+        4,
+        188.35
+      ],
+      [
+        "Software license",
+        2,
+        466.79
+      ],
+      [
+        "Consulting services",
+        2,
+        410.06
+      ],
+      [
+        "Onsite support",
+        5,
+        418.06
+      ],
+      [
+        "Technical writing",
+        9,
+        848.52
+      ]
+    ],
+    "subtotal": 13828.56,
+    "tax": 1382.86,
+    "balance_due": 15211.42
+  },
+  {
+    "file": "invoice_20.pdf",
+    "vendor": "Bluth Company",
+    "invoice_number": "INV-1019",
+    "date_issued": "2026-08-05",
+    "due_date": "2026-08-28",
+    "terms": "Net 30",
+    "items": [
+      [
+        "Data migration",
+        8,
+        298.06
+      ],
+      [
+        "Training session",
+        7,
+        84.35
+      ]
+    ],
+    "subtotal": 2974.93,
+    "tax": 208.25,
+    "balance_due": 3183.18
+  }
+]
