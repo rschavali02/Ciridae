@@ -13,12 +13,12 @@ class LineItemFields(BaseModel):
 
 
 class ExtractedFields(BaseModel):
-    vendor_name: str | None
-    invoice_number: str | None
-    amount: float | None
-    due_date: str | None  # ISO 8601, agent/caller parses to date
-    po_number: str | None
-    line_items: list[LineItemFields]
+    vendor_name: str | None = None
+    invoice_number: str | None = None
+    amount: float | None = None
+    due_date: str | None = None  # ISO 8601, agent/caller parses to date
+    po_number: str | None = None
+    line_items: list[LineItemFields] = []
 
 
 EXTRACT_TOOL = {
