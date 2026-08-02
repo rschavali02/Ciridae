@@ -2,6 +2,15 @@
 
 Reference data for verifying extraction results (Phase 1) and writing eval cases (Task 27).
 
+This file covers `clean_acme.pdf`, `clean_globex.pdf`, and `messy_scanned.pdf` specifically —
+these three are the regression set, referenced by exact filename in test code
+(`test_text_layer.py`, `test_vision_fallback.py`, `test_pipeline.py`, `test_extract_endpoint.py`).
+Don't rename or delete them without updating those tests.
+
+`invoice_01.pdf` through `invoice_20.pdf` are a separate, generated volume set (not referenced by
+any test) for manual spot-checking via `scripts/try_pdf.py` — their ground truth is in
+`GROUND_TRUTH.json` alongside this file.
+
 ## clean_acme.pdf
 - Vendor (as printed): Acme Inc
 - Invoice #: INV-2001
