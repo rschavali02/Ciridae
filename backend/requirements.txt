@@ -2,3 +2,7 @@ anthropic
 pdfplumber
 pydantic-settings
 pytest
+fastapi
+uvicorn[standard]
+python-multipart
+httpx
