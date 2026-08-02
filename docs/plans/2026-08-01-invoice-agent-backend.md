@@ -2429,3 +2429,13 @@ git commit -m "feat: add FastAPI app with health check and POST /eval/run"
 ## What's next
 
 This plan stops at a working backend: extraction, RAG, a tool-using agent, and an eval harness you can hit via `POST /eval/run`. The remaining pieces from `Project.MD` — `POST /invoices`, `GET /invoices`, approve/reject endpoints, and the React dashboard — get their own plan once you've run this one end-to-end and are happy with how the agent performs on the 9 cases.
+
+## Out-of-band addition: stateless `POST /extract` + minimal frontend
+
+Before reaching Phase 2, a `POST /extract` endpoint and a minimal Vite/React/TypeScript frontend were added on top of Phase 1 (extraction pipeline only) so there was something to look at end-to-end early. Deliberately **stateless** — it takes a PDF upload, runs `extract_invoice()`, and returns the fields as JSON. No DB, no persistence, because the `invoices`/`vendors` schema doesn't exist until Phase 3 (Task 13).
+
+This means `backend/app/main.py` already exists by the time Task 28 comes around — Task 28 should **extend** it (add `/eval/run` alongside the existing `/health` and `/extract`), not create it from scratch. `requirements.txt` will already have `fastapi`, `uvicorn[standard]`, `python-multipart`, and `httpx` from this addition too — skip re-adding them in Task 28.
+
+**When Phase 3 lands** (Task 13 onward adds the `Invoice`/`Vendor` tables), `POST /extract` is the natural thing to evolve into the real `POST /invoices` upload endpoint from `Project.MD` — same extraction call, but now it persists an `Invoice` row and kicks off the agent, instead of just returning JSON. Don't build a second, separate upload endpoint — extend this one.
+
+The frontend (`frontend/`) at this point is just the upload-and-view-results page. It becomes the approval dashboard once Phase 3's agent and `POST /invoices`/approve/reject endpoints exist — same app, more views, not a rewrite.
