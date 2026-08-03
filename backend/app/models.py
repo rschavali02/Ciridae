@@ -30,6 +30,19 @@ class Document(Base):
     embedding: Mapped[list[float]] = mapped_column(Vector(1024), nullable=False)
 
 
+class PurchaseOrder(Base):
+    """Stands in for the ERP's purchase order records.
+
+    Deliberately minimal -- the agent only ever needs to answer "does this PO
+    exist, and for how much".
+    """
+
+    __tablename__ = "purchase_orders"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    po_number: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
+
+
 class Vendor(Base):
     __tablename__ = "vendors"
     id: Mapped[uuid.UUID] = uuid_pk()

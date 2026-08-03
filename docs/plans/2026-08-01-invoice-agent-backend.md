@@ -2169,7 +2169,13 @@ def build_tools(session: AsyncSession, transcript: RunTranscript, invoice: Invoi
         Args:
             po_number: The purchase order number referenced on the invoice.
         """
-        out = await tool_impls.get_purchase_order(session, po_number=po_number)
+        # invoice_amount is bound, not asked of the model: it is already known
+        # authoritatively, and having the model re-state it invites a
+        # transcription slip that would silently corrupt the variance figure the
+        # whole PO-tolerance judgment rests on.
+        out = await tool_impls.get_purchase_order(
+            session, po_number=po_number, invoice_amount=float(invoice.amount)
+        )
         transcript.record_tool_call("get_purchase_order", {"po_number": po_number}, out)
         return json.dumps(out)
 

@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Invoice
+from app.models import Invoice, PurchaseOrder
 
 # Set from measured trigram scores against the seeded vendors, not by feel:
 #
@@ -201,3 +201,46 @@ async def check_duplicate_invoice(
             "paid_on": prior.created_at.isoformat() if prior.created_at else None,
         },
     }
+
+
+async def get_purchase_order(
+    session: AsyncSession, po_number: str, invoice_amount: float | None = None
+) -> dict:
+    """Look up a purchase order and measure how far the invoice diverges from it.
+
+    Reports arithmetic, not a verdict. The variance is computed here because
+    percentage arithmetic is exactly the sort of thing a model gets subtly
+    wrong; whether that variance is *acceptable* is deliberately left open,
+    because the governing threshold lives in the AP policy rather than in this
+    codebase.
+
+    That split is load-bearing in two ways. Encoding the threshold here would
+    let the agent clear the PO-tolerance eval cases without ever consulting the
+    policy, which would make the before/after RAG measurement meaningless. It
+    would also put a business rule somewhere a policy revision cannot reach --
+    the threshold would silently drift out of date the next time Finance
+    reissues the document.
+    """
+    po = (
+        await session.execute(select(PurchaseOrder).where(PurchaseOrder.po_number == po_number))
+    ).scalar_one_or_none()
+
+    if po is None:
+        return {
+            "exists": False,
+            "po_number": po_number,
+            "detail": f"No purchase order {po_number!r} exists in the system.",
+        }
+
+    po_amount = float(po.amount)
+    result = {"exists": True, "po_number": po.po_number, "po_amount": po_amount}
+
+    if invoice_amount is not None:
+        variance = invoice_amount - po_amount
+        result["invoice_amount"] = invoice_amount
+        result["variance_amount"] = round(variance, 2)
+        result["variance_percent"] = (
+            round(abs(variance) / po_amount * 100, 2) if po_amount else None
+        )
+
+    return result

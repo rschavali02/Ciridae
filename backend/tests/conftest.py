@@ -4,7 +4,7 @@ from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.config import settings
-from app.models import Invoice, Vendor
+from app.models import Invoice, PurchaseOrder, Vendor
 
 # A dedicated test engine with pooling disabled.
 #
@@ -47,7 +47,15 @@ async def db_session():
     # ambiguous match, and the test appears to fail for a reason that has nothing
     # to do with the code. The deletes are inside the outer transaction, so the
     # rollback below restores the real data.
-    for table in ("agent_runs", "audit_log", "line_items", "documents", "invoices", "vendors"):
+    for table in (
+        "agent_runs",
+        "audit_log",
+        "line_items",
+        "documents",
+        "invoices",
+        "vendors",
+        "purchase_orders",
+    ):
         await session.execute(text(f"DELETE FROM {table}"))
     await session.commit()
 

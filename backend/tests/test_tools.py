@@ -2,8 +2,13 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from app.agent.tools import check_duplicate_invoice, get_invoice_history, lookup_vendor
-from app.models import Invoice, Vendor
+from app.agent.tools import (
+    check_duplicate_invoice,
+    get_invoice_history,
+    get_purchase_order,
+    lookup_vendor,
+)
+from app.models import Invoice, PurchaseOrder, Vendor
 
 
 def _paid(vendor, amount, **kwargs):
@@ -239,3 +244,73 @@ async def test_does_not_match_the_invoice_against_itself(db_session, seeded_vend
     )
 
     assert result["match"] == "none"
+
+
+# --- get_purchase_order ----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_returns_the_purchase_order_amount(db_session):
+    db_session.add(PurchaseOrder(po_number="PO-1", amount=6000.0))
+    await db_session.commit()
+
+    result = await get_purchase_order(db_session, po_number="PO-1")
+
+    assert result["exists"] is True
+    assert result["po_amount"] == pytest.approx(6000.0)
+
+
+@pytest.mark.asyncio
+async def test_reports_a_missing_purchase_order(db_session):
+    """Policy II.3: an invoice citing a PO that does not exist must escalate --
+    the agent must not assume the PO was raised but not yet recorded."""
+    result = await get_purchase_order(db_session, po_number="PO-NOPE")
+
+    assert result["exists"] is False
+
+
+@pytest.mark.asyncio
+async def test_computes_the_variance_in_both_units(db_session):
+    """Both units matter because the governing rule is stated in both: a
+    discrepancy over 10 percent OR $1,000, whichever is lesser."""
+    db_session.add(PurchaseOrder(po_number="PO-2", amount=6000.0))
+    await db_session.commit()
+
+    result = await get_purchase_order(db_session, po_number="PO-2", invoice_amount=6400.0)
+
+    assert result["variance_amount"] == pytest.approx(400.0)
+    assert result["variance_percent"] == pytest.approx(6.67, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_does_not_decide_whether_the_variance_is_acceptable(db_session):
+    """The tool reports arithmetic, never the verdict.
+
+    Hard-coding the 10 percent / $1,000 threshold here would let the agent clear
+    eval cases 6, 7 and 8 without ever reading the policy -- which would make
+    the Phase 5 before/after RAG measurement meaningless, since those cases are
+    precisely the ones expected to fail at baseline. It is also the wrong place
+    for the rule: a policy change should not require a code change.
+    """
+    db_session.add(PurchaseOrder(po_number="PO-3", amount=20000.0))
+    await db_session.commit()
+
+    result = await get_purchase_order(db_session, po_number="PO-3", invoice_amount=23000.0)
+
+    assert "within_tolerance" not in result
+    assert "acceptable" not in result
+    assert "verdict" not in result
+
+
+@pytest.mark.asyncio
+async def test_surfaces_the_lesser_of_the_two_case(db_session):
+    """Eval case 8: 4 percent but $2,500 over. Inside the percentage limit,
+    outside the dollar cap. The tool must report both figures plainly enough
+    that an agent holding the rule can catch it."""
+    db_session.add(PurchaseOrder(po_number="PO-4", amount=62500.0))
+    await db_session.commit()
+
+    result = await get_purchase_order(db_session, po_number="PO-4", invoice_amount=65000.0)
+
+    assert result["variance_amount"] == pytest.approx(2500.0)
+    assert result["variance_percent"] == pytest.approx(4.0)
