@@ -4,7 +4,7 @@
 
 **Goal:** Build the backend for the invoice agent — extraction pipeline, RAG, a tool-using agent, and an eval harness — so it can be driven from a script/API before any frontend exists.
 
-**Architecture:** Work outward from the messy PDFs themselves: get extraction working as plain Python first (no database at all), introduce Postgres/pgvector only once RAG needs somewhere to store embeddings, then introduce the rest of the schema only once the agent's tools need it to query/write. A hand-rolled Anthropic tool-use loop drives the agent over six tools, built concurrently with the eval cases that test them. FastAPI shows up last, once there's a `POST /eval/run` worth exposing.
+**Architecture:** Work outward from the messy PDFs themselves: get extraction working as plain Python first (no database at all), then add persistence only once the agent's tools need to query it. A hand-rolled Anthropic tool-use loop drives the agent. Policy RAG is added **last, as a measured second pass** — see Build order below.
 
 **Tech Stack:** Python 3.12, `pdfplumber`, `anthropic` SDK, `voyageai` SDK, Postgres 16 + pgvector (Docker Compose), SQLAlchemy 2.0 (async, `asyncpg` driver), Alembic, FastAPI, pytest, pytest-asyncio.
 
@@ -12,15 +12,42 @@
 
 ---
 
+## Build order
+
+Task numbers below are **stable identifiers, not execution order** — they were assigned when the plan was first written and are kept fixed so cross-references between tasks stay valid. Execute the phases in the order listed here; within a phase, execute tasks in the order listed.
+
+| Phase | Tasks | What you end up with |
+|---|---|---|
+| 0 — Fixtures | 1 | Invoice PDFs + the policy PDF on disk |
+| 1 — Extraction | 2, 3, 4, 5, 6 | `extract_invoice()` working on clean and scanned PDFs |
+| 2 — Database | 7, 8, 13, 14 | Postgres running, full schema migrated, vendors seeded |
+| 3 — Agent + structured tools | 15, 16, 17, 18, 19, 21, 22, 23 | Agent running end-to-end over **five** tools |
+| 4 — Eval harness + **baseline** | 24, 25, 26, 27, 28 | 12 cases scored, `POST /eval/run`, a recorded baseline number |
+| 5 — Policy RAG + **re-measure** | 8b, 9, 10, 11, 12, 20, 29 | `search_policy` wired in, same 12 cases re-run and compared |
+
+### Why RAG comes last
+
+The original plan built RAG in Phase 2, before the agent existed. It's been moved to the end deliberately.
+
+Phase 3 builds the agent with only the five structured tools — `lookup_vendor`, `get_invoice_history`, `check_duplicate_invoice`, `get_purchase_order`, `submit_recommendation`. Phase 4 then scores it against all 12 eval cases and records the result. That baseline is expected to be *partial*, and the failures are predictable: cases 1-4 and 10 run entirely off structured tools and should pass, while cases 6, 7, 8, 9, and 11 depend on rules that exist nowhere except the policy document — the 10%/$1,000 lesser-of-two PO tolerance, the PO-required threshold, the currency handling. With no way to read the policy, the agent has to guess at those.
+
+Phase 5 then adds policy retrieval as a single additive change (`TOOL_DEFINITIONS` gains one entry, `_dispatch` gains one branch, the eval cases don't change at all) and re-runs the identical suite.
+
+The point is to make "does RAG actually earn its place here?" a number you measured rather than an assertion you accepted. It also mirrors the capability-eval loop from `AI-Agent-Evals.md`: measure what the agent can do, find where it breaks, make one change, re-measure. If the jump is small, that is a real and useful finding — not a failure.
+
+**Note on already-completed work:** Tasks 7 and 8 (Postgres + the `documents` table) were built before this resequencing, so the `documents` table exists and sits empty until Phase 5. Harmless — no rework needed, just don't expect anything in it before then.
+
+---
+
 ## Phase 0 — Invoice fixtures
 
-### Task 1: Source sample invoices + AP policy doc
+### Task 1: Source sample invoices + the AP policy PDF
 
 **Files:**
 - Create: `backend/fixtures/invoices/clean_acme.pdf`
 - Create: `backend/fixtures/invoices/clean_globex.pdf`
 - Create: `backend/fixtures/invoices/messy_scanned.pdf`
-- Create: `backend/fixtures/policy/ap_policy.md`
+- Add: `backend/fixtures/policy/FINA_Accounts_Payable.pdf`
 
 This task is manual sourcing, not TDD — there's no test to write first, and no infrastructure needed yet.
 
@@ -34,18 +61,31 @@ Name vendors so one has a naming variant you'll test later, e.g. one PDF says "A
 
 Either photograph/scan a printed invoice at an angle, or find a low-quality scanned sample online. This needs to have no usable text layer — it's what exercises the vision fallback in Task 4.
 
-**Step 3: Write a short AP policy doc**
+**Step 3: Obtain a real AP policy document**
 
-```markdown
-# backend/fixtures/policy/ap_policy.md
+This is the RAG corpus. Use a genuine published policy rather than a synthetic one — the repo uses `backend/fixtures/policy/FINA_Accounts_Payable.pdf`, UNFPA's *Policy and Procedures on Accounts Payable* (15 pages, ~26,600 characters of extracted text). Any real organization's published AP policy works; many are public.
 
-# AP Approval Policy
+Two reasons a real document is worth the extra handling over a tidy synthetic one:
 
-- Invoices under $10,000 may be auto-approved if extraction confidence is high and no anomalies are found.
-- Invoices of $10,000 or more require documented evidence of a second approval before payment. If no such evidence is found in the invoice or attached correspondence, escalate to human review.
-- Any invoice referencing a purchase order must have that PO's amount match within 5%, or escalate.
-- Bank account details that differ from the vendor's records on file must never be auto-approved — always escalate for manual verification.
+1. **It's unambiguously too large to inject into every prompt.** 26k characters settles the "is RAG actually necessary here" question that a 4-bullet policy leaves open.
+2. **It's messy in the ways real corpora are messy**, which is the whole point of the exercise. Specifically, this PDF's extracted text contains *zero* `\n\n` paragraph breaks — every line break is a single `\n` from PDF line wrapping. It also carries a table of contents with dot leaders, and a page header (`UNFPA / Policies and Procedures Manual / Policy and Procedures on Accounts Payable`) plus footer (`Effective date: September 2016` and a page number) repeated on all 15 pages. Naive paragraph splitting on `\n\n` returns the entire document as one chunk. Task 9 has to handle all of this.
+
+**Know what rules the document actually contains before writing eval cases.** Survey it first:
+
+```bash
+python -c "
+import pdfplumber
+with pdfplumber.open('fixtures/policy/FINA_Accounts_Payable.pdf') as pdf:
+    text = '\n'.join((p.extract_text() or '') for p in pdf.pages)
+for kw in ['discrepan', 'duplicat', 'segregation', 'approv', 'currency']:
+    print(f'=== {kw} ===')
+    for l in text.split('\n'):
+        if kw in l.lower() and '....' not in l:
+            print('  ', l.strip()[:110])
+"
 ```
+
+The eval cases in Task 27 must test rules this document actually states — a case asserting a rule the corpus doesn't contain is a broken task, not an agent failure.
 
 **Step 4: Commit**
 
@@ -513,9 +553,11 @@ git commit -m "feat: wire text-layer/vision/field-extraction into one pipeline"
 
 ---
 
-## Phase 2 — RAG (Postgres/pgvector introduced here)
+## Phase 2 — Database (Tasks 7, 8, then 13, 14)
 
 This is the first point where anything needs to persist, so it's the first point where a database shows up.
+
+**Execute Tasks 7 and 8 here, then jump forward to Tasks 13 and 14** (core schema + vendor seed, further down under the old Phase 3 heading) before starting Phase 3. Tasks 8b through 12 sit physically between them in this document but belong to **Phase 5** — skip past them for now.
 
 ### Task 7: Postgres via Docker Compose + DB engine
 
@@ -665,11 +707,14 @@ def uuid_pk() -> Mapped[uuid.UUID]:
 class Document(Base):
     __tablename__ = "documents"
     id: Mapped[uuid.UUID] = uuid_pk()
-    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=True)
-    doc_type: Mapped[str] = mapped_column(Text, nullable=False)  # "invoice" | "policy"
+    section: Mapped[str] = mapped_column(Text, nullable=False)  # e.g. "## 2. Approval Authority"
     chunk_text: Mapped[str] = mapped_column(Text, nullable=False)
     embedding: Mapped[list[float]] = mapped_column(Vector(1024), nullable=False)
 ```
+
+> **Revised after the RAG-scope decision.** This model originally had `invoice_id` and `doc_type` columns, because the plan was to embed invoice text alongside the policy. That was dropped — see "RAG is policy-only" in `Project.MD`. The corpus is now only the policy, so `doc_type` would be a constant and `invoice_id` would always be null. They're replaced by `section`, which carries the policy heading a chunk came from so retrieved clauses are citable.
+>
+> If you already ran the original migration, the table needs altering rather than creating — see Task 8b.
 
 **Step 2: Initialize Alembic**
 
@@ -741,7 +786,76 @@ git commit -m "feat: add Document model and initial migration"
 
 ---
 
-### Task 9: Chunking
+## Phase 5 — Policy RAG and re-measurement (Tasks 8b, 9, 10, 11, 12, 20, 29)
+
+> **These tasks run LAST, after Phase 4's baseline is recorded.** They appear here in the document only because the task numbers predate the resequencing. Do not build them before the eval baseline exists — the entire point is to measure the difference they make. Skip ahead to Task 13 if you're following the build order.
+
+---
+
+### Task 8b: Migrate `documents` to the policy-only shape
+
+Only needed if you already ran Task 8's original migration (with `invoice_id`/`doc_type`). If you're building fresh from the revised model above, skip this.
+
+**Files:**
+- Modify: `backend/app/models.py` (already done above)
+- Create: `backend/alembic/versions/000X_documents_policy_only.py`
+
+**Step 1: Generate the migration**
+
+```bash
+alembic revision --autogenerate -m "documents: drop invoice_id/doc_type, add section"
+```
+
+**Step 2: Check the generated file** — autogenerate should produce `op.drop_column` for `invoice_id` and `doc_type`, plus `op.add_column` for `section`. Because `section` is `nullable=False` and the table may already hold rows, add a server default in the migration or truncate first. The table is expected to be empty at this point, so truncating is simplest:
+
+```python
+def upgrade() -> None:
+    op.execute("TRUNCATE TABLE documents")
+    op.add_column('documents', sa.Column('section', sa.Text(), nullable=False))
+    op.drop_column('documents', 'invoice_id')
+    op.drop_column('documents', 'doc_type')
+```
+
+**Step 3: Apply and verify**
+
+```bash
+alembic upgrade head
+docker compose exec db psql -U invoice_agent -d invoice_agent -c "\d documents"
+```
+
+Expected columns: `id`, `section`, `chunk_text`, `embedding`.
+
+**Step 4: Commit**
+
+```bash
+git add backend/app/models.py backend/alembic/versions/
+git commit -m "refactor: narrow documents table to policy-only RAG corpus"
+```
+
+---
+
+### Task 9: Chunking the policy PDF
+
+Only the policy gets chunked — invoice text is not embedded (see the RAG-scope note in Task 8). So there is one chunking function, not two.
+
+**Why not paragraph splitting.** The obvious approach — split on `\n\n`, one chunk per paragraph — does not work on this input, because PDF text extraction produces no blank lines at all. Every line ends in a single `\n` from line wrapping, so `text.split("\n\n")` returns a one-element list containing the entire 26k-character document. Verify this yourself before writing the chunker; it's the kind of assumption that fails silently rather than loudly:
+
+```bash
+python -c "
+import pdfplumber
+with pdfplumber.open('fixtures/policy/FINA_Accounts_Payable.pdf') as pdf:
+    text = '\n'.join((p.extract_text() or '') for p in pdf.pages)
+print('paragraph breaks found:', text.count('\n\n'))
+"
+```
+
+**What to do instead — split on section headings.** The document has a real hierarchy expressed as numbered headings, which survive extraction intact: roman numerals (`I. Purpose`, `II. Policy`), letters (`A. Segregation of duties`), and `Step N:` markers. Detect those with a regex, treat each as a section boundary, and join the wrapped lines between boundaries back into flowing text. Each chunk then carries its heading, which makes retrieved clauses citable — the agent can say "per §III.A Step 1" and the groundedness grader can check that.
+
+**Three pieces of cleanup the real document requires:**
+
+- **Page furniture**: the header (`UNFPA`, `Policies and Procedures Manual`, `Policy and Procedures on Accounts Payable`) and footer (`Effective date: September 2016`, bare page numbers) repeat on all 15 pages. Left in, they'd be embedded ~15 times each and pollute every similarity search with boilerplate.
+- **Table of contents**: TOC entries look exactly like headings but are followed by dot leaders (`.......... 7`). Without filtering, every section gets a duplicate empty chunk from its TOC line.
+- **Long sections**: some sections run past 2,000 characters. Sub-split those on sentence boundaries so a chunk is one idea, not one chapter.
 
 **Files:**
 - Create: `backend/app/rag/__init__.py`
@@ -752,20 +866,63 @@ git commit -m "feat: add Document model and initial migration"
 
 ```python
 # backend/tests/test_chunking.py
-from app.rag.chunking import chunk_invoice_text, chunk_policy_text
+from app.rag.chunking import chunk_policy_text, PolicyChunk
 
-def test_chunk_invoice_text_fixed_size():
-    text = "A" * 1200
-    chunks = chunk_invoice_text(text, chunk_size=500, overlap=50)
-    assert len(chunks) == 3
-    assert len(chunks[0]) == 500
-    # overlap: end of chunk 0 should reappear at start of chunk 1
-    assert chunks[0][-50:] == chunks[1][:50]
+SAMPLE = """UNFPA
+Policies and Procedures Manual
+Policy and Procedures on Accounts Payable
+I. Purpose .................................................................... 1
+II. Policy ..................................................................... 2
+UNFPA
+Policies and Procedures Manual
+Policy and Procedures on Accounts Payable
+I. Purpose
+This policy establishes the procedures for the payment of purchase
+order and non-purchase order procured goods and services.
+1
+Effective date: September 2016
+II. Policy
+For purchase order based payments, discrepancies between the vendor
+invoice and the purchase order greater than 10 percent or $1,000 USD
+must be resolved before the payment can be processed.
+2
+Effective date: September 2016
+"""
 
-def test_chunk_policy_text_by_paragraph():
-    text = "First point.\n\nSecond point.\n\nThird point."
-    chunks = chunk_policy_text(text)
-    assert chunks == ["First point.", "Second point.", "Third point."]
+
+def test_splits_on_section_headings():
+    chunks = chunk_policy_text(SAMPLE)
+    sections = [c.section for c in chunks]
+    assert "I. Purpose" in sections
+    assert "II. Policy" in sections
+
+
+def test_drops_table_of_contents_entries():
+    chunks = chunk_policy_text(SAMPLE)
+    # TOC lines have dot leaders; none of their text should survive
+    assert not any("....." in c.text for c in chunks)
+    # "I. Purpose" appears twice in the source (TOC + body) but is one section
+    assert sum(1 for c in chunks if c.section == "I. Purpose") == 1
+
+
+def test_strips_repeating_page_furniture():
+    chunks = chunk_policy_text(SAMPLE)
+    body = " ".join(c.text for c in chunks)
+    assert "Policies and Procedures Manual" not in body
+    assert "Effective date: September 2016" not in body
+
+
+def test_rejoins_wrapped_lines_into_flowing_text():
+    chunks = chunk_policy_text(SAMPLE)
+    policy = next(c for c in chunks if c.section == "II. Policy")
+    assert "greater than 10 percent or $1,000 USD must be resolved" in policy.text
+
+
+def test_embed_text_includes_section_heading():
+    chunks = chunk_policy_text(SAMPLE)
+    policy = next(c for c in chunks if c.section == "II. Policy")
+    assert policy.embed_text.startswith("II. Policy")
+    assert "10 percent" in policy.embed_text
 ```
 
 **Step 2: Run test to verify it fails**
@@ -776,20 +933,88 @@ Expected: FAIL — module doesn't exist
 **Step 3: Write `backend/app/rag/chunking.py`**
 
 ```python
-def chunk_invoice_text(text: str, chunk_size: int = 500, overlap: int = 50) -> list[str]:
-    if len(text) <= chunk_size:
-        return [text]
-    chunks = []
-    start = 0
-    step = chunk_size - overlap
-    while start < len(text):
-        chunks.append(text[start:start + chunk_size])
-        start += step
+import re
+from dataclasses import dataclass
+
+HEADING_RE = re.compile(
+    r"^(?:(?:[IVX]+|[A-H])\.\s+\S|Step\s+\d+\s*:)"
+)
+
+# Repeating header/footer lines that appear on every page of the source PDF.
+PAGE_FURNITURE = {
+    "UNFPA",
+    "Policies and Procedures Manual",
+    "Policy and Procedures on Accounts Payable",
+}
+
+MAX_CHUNK_CHARS = 1500
+
+
+@dataclass
+class PolicyChunk:
+    section: str  # heading this chunk lives under, e.g. "II. Policy"
+    text: str     # the rule text itself
+
+    @property
+    def embed_text(self) -> str:
+        """What gets embedded: heading + body, so the vector captures which
+        part of the policy the rule belongs to, not just its wording."""
+        return f"{self.section}\n{self.text}"
+
+
+def _is_noise(line: str) -> bool:
+    if not line:
+        return True
+    if line in PAGE_FURNITURE:
+        return True
+    if line.isdigit():                      # bare page number
+        return True
+    if line.startswith("Effective date:"):
+        return True
+    if "....." in line:                     # table-of-contents entry
+        return True
+    return False
+
+
+def _split_long(section: str, body: str) -> list[PolicyChunk]:
+    """Sub-split an over-long section on sentence boundaries."""
+    if len(body) <= MAX_CHUNK_CHARS:
+        return [PolicyChunk(section=section, text=body)]
+
+    sentences = re.split(r"(?<=[.:])\s+", body)
+    chunks, current = [], ""
+    for sentence in sentences:
+        if current and len(current) + len(sentence) + 1 > MAX_CHUNK_CHARS:
+            chunks.append(PolicyChunk(section=section, text=current.strip()))
+            current = sentence
+        else:
+            current = f"{current} {sentence}".strip()
+    if current:
+        chunks.append(PolicyChunk(section=section, text=current.strip()))
     return chunks
 
-def chunk_policy_text(text: str) -> list[str]:
-    paragraphs = [p.strip() for p in text.split("\n\n")]
-    return [p for p in paragraphs if p]
+
+def chunk_policy_text(text: str) -> list[PolicyChunk]:
+    sections: list[tuple[str, list[str]]] = []
+
+    for raw in text.split("\n"):
+        line = raw.strip()
+        if _is_noise(line):
+            continue
+        if HEADING_RE.match(line):
+            sections.append((line, []))
+            continue
+        if sections:
+            sections[-1][1].append(line)
+        # lines before the first heading are front matter -- dropped
+
+    chunks: list[PolicyChunk] = []
+    for section, lines in sections:
+        body = " ".join(lines).strip()
+        if not body:
+            continue  # heading with no content (e.g. a leftover TOC duplicate)
+        chunks.extend(_split_long(section, body))
+    return chunks
 ```
 
 **Step 4: Run test to verify it passes**
@@ -797,11 +1022,28 @@ def chunk_policy_text(text: str) -> list[str]:
 Run: `pytest tests/test_chunking.py -v`
 Expected: PASS
 
-**Step 5: Commit**
+**Step 5: Sanity-check against the real 15-page PDF**
+
+```bash
+python -c "
+import pdfplumber
+from app.rag.chunking import chunk_policy_text
+with pdfplumber.open('fixtures/policy/FINA_Accounts_Payable.pdf') as pdf:
+    text = '\n'.join((p.extract_text() or '') for p in pdf.pages)
+chunks = chunk_policy_text(text)
+print(len(chunks), 'chunks')
+for c in chunks:
+    print(f'  [{c.section[:38]:38}] {len(c.text):5} chars | {c.text[:60]}...')
+"
+```
+
+Read the output rather than just checking it runs. Every chunk should be a coherent, self-contained rule under the right heading. Watch for: boilerplate that survived the noise filter, chunks that are only a fragment of a sentence, or a heading whose body swallowed the *next* section's content (which would mean the heading regex missed a boundary).
+
+**Step 6: Commit**
 
 ```bash
 git add backend/app/rag/__init__.py backend/app/rag/chunking.py backend/tests/test_chunking.py
-git commit -m "feat: add fixed-size invoice chunking and paragraph-based policy chunking"
+git commit -m "feat: add section-aware chunking for the policy PDF"
 ```
 
 ---
@@ -878,14 +1120,19 @@ from app.models import Document
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_store_document_chunks(db_session):
-    chunks = ["chunk one text", "chunk two text"]
-    await store_document_chunks(db_session, invoice_id=None, doc_type="policy", chunks=chunks)
-    result = await db_session.execute(select(Document).where(Document.doc_type == "policy"))
-    rows = result.scalars().all()
+async def test_store_policy_chunks(db_session):
+    chunks = [
+        PolicyChunk(section="II. Policy", text="Discrepancies greater than 10 percent must be resolved."),
+        PolicyChunk(section="IV. Other", text="There must be appropriate segregation of duties."),
+    ]
+    await store_policy_chunks(db_session, chunks)
+    rows = (await db_session.execute(select(Document))).scalars().all()
     assert len(rows) == 2
     assert len(rows[0].embedding) == 1024
+    assert {r.section for r in rows} == {"II. Policy", "IV. Other"}
 ```
+
+Note what gets embedded: `chunk.embed_text` (heading + body), not `chunk.text` alone. A query like "what's the tolerance for purchase order discrepancies" should match a chunk partly because it lives under a policy heading, not only because of its wording. The `chunk_text` column stores the body on its own, since that's what gets shown back to the agent.
 
 **Step 2: Write `backend/tests/conftest.py`** — this `db_session` fixture is reused by every DB-touching test from here on:
 
@@ -910,14 +1157,16 @@ Expected: FAIL — module doesn't exist
 ```python
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Document
+from app.rag.chunking import PolicyChunk
 from app.rag.embeddings import embed_texts
 
-async def store_document_chunks(
-    session: AsyncSession, invoice_id, doc_type: str, chunks: list[str]
+async def store_policy_chunks(
+    session: AsyncSession, chunks: list[PolicyChunk]
 ) -> list[Document]:
-    embeddings = embed_texts(chunks, input_type="document")
+    # embed heading + body, but store the body alone for display
+    embeddings = embed_texts([c.embed_text for c in chunks], input_type="document")
     documents = [
-        Document(invoice_id=invoice_id, doc_type=doc_type, chunk_text=chunk, embedding=embedding)
+        Document(section=chunk.section, chunk_text=chunk.text, embedding=embedding)
         for chunk, embedding in zip(chunks, embeddings)
     ]
     session.add_all(documents)
@@ -939,7 +1188,7 @@ git commit -m "feat: store document chunks with embeddings in pgvector"
 
 ---
 
-### Task 12: Similarity search (`search_documents`)
+### Task 12: Similarity search over the policy
 
 **Files:**
 - Create: `backend/app/rag/search.py`
@@ -950,21 +1199,23 @@ git commit -m "feat: store document chunks with embeddings in pgvector"
 ```python
 # backend/tests/test_search.py
 import pytest
-from app.rag.store import store_document_chunks
-from app.rag.search import search_documents
+from app.rag.chunking import PolicyChunk
+from app.rag.store import store_policy_chunks
+from app.rag.search import search_policy
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_search_returns_most_relevant_chunk(db_session):
-    await store_document_chunks(
-        db_session, invoice_id=None, doc_type="policy",
-        chunks=[
-            "Invoices under $10,000 may be auto-approved.",
-            "Bank details that differ from vendor records must always escalate.",
-        ],
-    )
-    results = await search_documents(db_session, query="what happens if bank details changed", top_k=1)
-    assert "bank details" in results[0].chunk_text.lower()
+async def test_search_returns_most_relevant_clause(db_session):
+    await store_policy_chunks(db_session, [
+        PolicyChunk(section="IV. Other",
+                    text="There must be appropriate segregation of functional responsibilities."),
+        PolicyChunk(section="II. Policy",
+                    text="Discrepancies between the vendor invoice and the purchase order greater "
+                         "than 10 percent or $1,000 USD (the lesser of the two) must be resolved."),
+    ])
+    results = await search_policy(db_session, query="how much can an invoice differ from its PO", top_k=1)
+    assert "10 percent" in results[0].chunk_text
+    assert results[0].section == "II. Policy"
 ```
 
 **Step 2: Run test to verify it fails**
@@ -980,60 +1231,80 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Document
 from app.rag.embeddings import embed_texts
 
-async def search_documents(
-    session: AsyncSession, query: str, invoice_id=None, top_k: int = 5
+async def search_policy(
+    session: AsyncSession, query: str, top_k: int = 5
 ) -> list[Document]:
+    # input_type="query" matters -- Voyage embeds queries and documents
+    # differently, and mixing them measurably degrades retrieval quality.
     query_embedding = embed_texts([query], input_type="query")[0]
-    stmt = select(Document)
-    if invoice_id is not None:
-        stmt = stmt.where((Document.invoice_id == invoice_id) | (Document.doc_type == "policy"))
-    stmt = stmt.order_by(Document.embedding.cosine_distance(query_embedding)).limit(top_k)
+    stmt = (
+        select(Document)
+        .order_by(Document.embedding.cosine_distance(query_embedding))
+        .limit(top_k)
+    )
     result = await session.execute(stmt)
     return result.scalars().all()
 ```
+
+No filtering clause is needed: the `documents` table holds only policy chunks (see the RAG-scope note in Task 8).
 
 **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/test_search.py -v -m integration`
 Expected: PASS
 
-**Step 5: Checkpoint — embed your real policy doc and an invoice, and search it**
+**Step 5: Checkpoint — load the real 15-page policy and query it**
 
 ```bash
 python -c "
-import asyncio
+import asyncio, pdfplumber
 from app.db import SessionLocal
 from app.rag.chunking import chunk_policy_text
-from app.rag.store import store_document_chunks
-from app.rag.search import search_documents
+from app.rag.store import store_policy_chunks
+from app.rag.search import search_policy
+
+QUERIES = [
+    'how much can an invoice differ from the purchase order',
+    'who has to approve a payment before it is released',
+    'what if the invoice is in a different currency',
+    'can the same person request and approve a payment',
+]
 
 async def main():
-    with open('fixtures/policy/ap_policy.md') as f:
-        chunks = chunk_policy_text(f.read())
+    with pdfplumber.open('fixtures/policy/FINA_Accounts_Payable.pdf') as pdf:
+        text = '\n'.join((p.extract_text() or '') for p in pdf.pages)
+    chunks = chunk_policy_text(text)
     async with SessionLocal() as session:
-        await store_document_chunks(session, invoice_id=None, doc_type='policy', chunks=chunks)
-        results = await search_documents(session, query='what if the invoice is over ten thousand dollars')
-        for r in results:
-            print(r.chunk_text)
+        await store_policy_chunks(session, chunks)
+        for q in QUERIES:
+            print(f'\n--- {q}')
+            for r in await search_policy(session, query=q, top_k=2):
+                print(f'  [{r.section}] {r.chunk_text[:110]}...')
 
 asyncio.run(main())
 "
 ```
 
-Expected: the $10,000/second-approval policy chunk comes back near the top. This is RAG working end-to-end on your real policy doc before the agent ever touches it.
+Read the results, don't just check it ran. The PO-tolerance query should surface the §II clause containing "10 percent or $1,000 USD"; the segregation question should surface §IV.A. If a query returns page boilerplate or an unrelated section, that's a chunking problem to fix in Task 9, not something to work around here.
 
 **Step 6: Commit**
 
 ```bash
 git add backend/app/rag/search.py backend/tests/test_search.py
-git commit -m "feat: add pgvector similarity search over invoice and policy chunks"
+git commit -m "feat: add pgvector similarity search over the policy corpus"
 ```
 
 ---
 
-## Phase 3 — Agent, tools, and eval harness
+## Phases 2 (cont.), 3, and 4 — Schema, agent, structured tools, eval harness
 
-This is where the rest of the schema shows up — vendors, invoices, line items, purchase orders, and the tables the agent's tools and the eval harness both read and write. Tools get built one at a time, each followed immediately by the eval case that exercises it, per your request to build evals concurrently rather than after the fact.
+This is where the rest of the schema shows up — vendors, invoices, line items, purchase orders, and the tables the agent's tools and the eval harness both read and write.
+
+Task sequencing across this stretch of the document:
+
+- **Tasks 13-14** finish **Phase 2** — core schema and seeded vendors.
+- **Tasks 15-19, then 21-23** are **Phase 3** — the agent and its five structured tools. **Skip Task 20**; `search_policy` belongs to Phase 5, after the baseline exists. Go 19 → 21.
+- **Tasks 24-28** are **Phase 4** — the eval harness, graders, the 12 cases, and the baseline run.
 
 ### Task 13: Core schema (vendors, invoices, line items, agent runs, audit log)
 
@@ -1301,7 +1572,7 @@ git commit -m "feat: add agent run transcript recording"
 
 ---
 
-### Task 16: Tool — `lookup_vendor` (+ sets up eval case 3, vendor name drift)
+### Task 16: Tool — `lookup_vendor` (backs eval cases 4 and 5)
 
 **Files:**
 - Create: `backend/app/agent/tools.py`
@@ -1602,7 +1873,9 @@ git commit -m "feat: add purchase_orders table and get_purchase_order tool"
 
 ---
 
-### Task 20: Tool — `search_documents` (wraps RAG)
+### Task 20: Tool — `search_policy` (wraps RAG) — **PHASE 5**
+
+> Do not build this during Phase 3. It runs after Task 28's baseline is recorded. Skip from Task 19 to Task 21.
 
 **Files:**
 - Modify: `backend/app/agent/tools.py`
@@ -1613,40 +1886,49 @@ git commit -m "feat: add purchase_orders table and get_purchase_order tool"
 ```python
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_search_documents_tool_finds_policy_chunk(db_session):
-    from app.rag.store import store_document_chunks
-    await store_document_chunks(db_session, invoice_id=None, doc_type="policy", chunks=["Bank details that differ from vendor records must always escalate."])
-    result = await search_documents_tool(db_session, query="changed bank account", invoice_id=None)
-    assert any("bank details" in r["text"].lower() for r in result["results"])
+async def test_search_policy_tool_finds_relevant_clause(db_session):
+    from app.rag.chunking import PolicyChunk
+    from app.rag.store import store_policy_chunks
+    await store_policy_chunks(db_session, [
+        PolicyChunk(section="II. Policy",
+                    text="Discrepancies between the vendor invoice and the purchase order greater "
+                         "than 10 percent or $1,000 USD (the lesser of the two) must be resolved."),
+    ])
+    result = await search_policy_tool(db_session, query="how much can an invoice differ from its PO")
+    assert any("10 percent" in r["text"] for r in result["clauses"])
+    assert result["clauses"][0]["section"] == "II. Policy"
 ```
 
 **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_tools.py -v -k search_documents -m integration`
+Run: `pytest tests/test_tools.py -v -k search_policy -m integration`
 Expected: FAIL — not defined
 
 **Step 3: Append to `backend/app/agent/tools.py`**
 
 ```python
-from app.rag.search import search_documents
+from app.rag.search import search_policy
 
-async def search_documents_tool(session: AsyncSession, query: str, invoice_id: str | None = None) -> dict:
-    docs = await search_documents(session, query=query, invoice_id=invoice_id, top_k=5)
-    return {"results": [{"text": d.chunk_text, "doc_type": d.doc_type} for d in docs]}
+async def search_policy_tool(session: AsyncSession, query: str) -> dict:
+    docs = await search_policy(session, query=query, top_k=5)
+    return {"clauses": [{"section": d.section, "text": d.chunk_text} for d in docs]}
 ```
 
-Named `search_documents_tool` (not `search_documents`) to avoid clashing with the RAG-layer function it wraps — the tool-use loop in Task 22 exposes this one to the agent.
+Two design notes, both following the "writing tools for agents" principles the project committed to:
+
+- Named `search_policy_tool` (not `search_policy`) to avoid clashing with the RAG-layer function it wraps.
+- Each result carries its `section`, not just the text. That's what lets the agent cite "per §II" in its reasoning and lets the groundedness grader verify the citation — a bare wall of text would make both impossible.
 
 **Step 4: Run test to verify it passes**
 
-Run: `pytest tests/test_tools.py -v -k search_documents -m integration`
+Run: `pytest tests/test_tools.py -v -k search_policy -m integration`
 Expected: PASS
 
 **Step 5: Commit**
 
 ```bash
 git add backend/app/agent/tools.py backend/tests/test_tools.py
-git commit -m "feat: add search_documents agent tool wrapping RAG similarity search"
+git commit -m "feat: add search_policy agent tool wrapping RAG similarity search"
 ```
 
 ---
@@ -1764,13 +2046,23 @@ Expected: FAIL — module doesn't exist
 
 **Step 3: Write `backend/app/agent/prompts.py`**
 
+Write the **Phase 3 version** now — it must not mention policy retrieval, since that tool won't exist until Phase 5. A prompt that tells the agent to consult a policy it cannot read would contaminate the baseline.
+
 ```python
 SYSTEM_PROMPT = """You are an accounts-payable review agent. Given an invoice's extracted fields, \
 investigate it using the tools available before making a recommendation. Always check the vendor \
 resolves correctly, check invoice history for anomalies, check for duplicates, and check any \
-referenced purchase order. Use search_documents_tool if you need to check AP policy or the \
-invoice's original wording. When you have enough information, call submit_recommendation with \
+referenced purchase order. When you have enough information, call submit_recommendation with \
 your decision (approve, reject, or escalate), a confidence score from 0 to 1, and your reasoning."""
+```
+
+**In Phase 5**, after the baseline is recorded, append one sentence — and nothing else, so the only variable that changed is policy access:
+
+```python
+# appended to SYSTEM_PROMPT in Phase 5, alongside adding search_policy_tool
+"""Use search_policy_tool to look up the written AP policy governing this invoice, \
+and cite the section you relied on in your reasoning. Do not assert a rule you have \
+not retrieved."""
 ```
 
 **Step 4: Write `backend/app/agent/loop.py`**
@@ -1793,8 +2085,7 @@ TOOL_DEFINITIONS = [
      "input_schema": {"type": "object", "properties": {"vendor_id": {"type": "string"}, "amount": {"type": "number"}, "invoice_number": {"type": ["string", "null"]}}, "required": ["vendor_id", "amount"]}},
     {"name": "get_purchase_order", "description": "Look up a purchase order by number.",
      "input_schema": {"type": "object", "properties": {"po_number": {"type": "string"}}, "required": ["po_number"]}},
-    {"name": "search_documents_tool", "description": "Semantic search over this invoice's original text and AP policy.",
-     "input_schema": {"type": "object", "properties": {"query": {"type": "string"}, "invoice_id": {"type": ["string", "null"]}}, "required": ["query"]}},
+    # PHASE 5 adds one more entry here -- see below. Leave it out for the baseline.
     {"name": "submit_recommendation", "description": "Submit your final decision. Call this last.",
      "input_schema": {"type": "object", "properties": {
          "decision": {"type": "string", "enum": ["approve", "reject", "escalate"]},
@@ -1814,8 +2105,7 @@ async def _dispatch(session, name: str, input: dict):
         return await tool_impls.check_duplicate_invoice(session, **input)
     if name == "get_purchase_order":
         return await tool_impls.get_purchase_order(session, **input)
-    if name == "search_documents_tool":
-        return await tool_impls.search_documents_tool(session, **input)
+    # PHASE 5 adds the search_policy_tool branch here.
     if name == "submit_recommendation":
         return tool_impls.submit_recommendation(**input)
     raise ValueError(f"Unknown tool: {name}")
@@ -2195,7 +2485,7 @@ git commit -m "feat: add LLM-rubric groundedness grader for agent reasoning"
 
 ---
 
-### Task 27: Write the 9 eval cases
+### Task 27: Write the 12 eval cases
 
 **Files:**
 - Create: `backend/app/eval/suite.py`
@@ -2203,7 +2493,13 @@ git commit -m "feat: add LLM-rubric groundedness grader for agent reasoning"
 
 **Step 1: Write the case definitions**
 
-Use the ground-truth data you recorded in Task 1 for your real fixture invoices where relevant, and synthetic data for the rest. Each case seeds exactly what it needs to test one thing.
+Each case seeds exactly what it needs to test one thing. Two rules govern this suite:
+
+**Every case must test a rule the policy actually states.** The governing clause for most is §II: *"discrepancies between the vendor invoice and the purchase order greater than 10 percent or $1,000 USD or equivalent in local currency (the lesser of the two) must be resolved before the payment can be processed."* A case asserting a rule the corpus doesn't contain is a broken task, not an agent failure — that distinction is Step 7 of `AI-Agent-Evals.md` and it's the most common way eval suites go wrong.
+
+**Every anomaly case is paired with a near-identical case that should pass.** Cases 6/7/8 vary only in how far the invoice diverges from its PO; 2 and 3 differ only in whether the invoice number matches exactly. Without the pairs, an agent that escalates everything scores well — the one-sided-optimization trap from Step 3 of the evals doc.
+
+Note which tools each case expects. Cases 6-9 and 11 expect `search_policy_tool`, which **does not exist during the Phase 4 baseline run** — those are the cases expected to fail before Phase 5, and the whole reason for running the suite twice.
 
 ```python
 # backend/app/eval/suite.py
@@ -2212,15 +2508,18 @@ from app.eval.cases import EvalCase
 ACME = {"name": "ACME Incorporated", "normalized_name": "acme incorporated", "bank_details": "IBAN GB00ACME00000000000001"}
 
 CASES = [
+    # --- Cases 1-5, 10, 12: answerable from structured tools alone.
+    # --- These should pass at the Phase 4 baseline, before RAG exists.
     EvalCase(
         name="01_clean_approve",
         vendor=ACME,
-        invoice={"amount": 500.0, "raw_text": "ACME Incorporated invoice, $500, no PO."},
+        invoice={"amount": 5000.0, "po_number": "PO-1", "raw_text": "ACME Incorporated invoice, $5,000, PO-1."},
+        purchase_order={"po_number": "PO-1", "amount": 5000.0},
         expected_decision="approve",
-        expected_tools=["lookup_vendor"],
+        expected_tools=["lookup_vendor", "get_purchase_order"],
     ),
     EvalCase(
-        name="02_duplicate_reject",
+        name="02_exact_duplicate_reject",
         vendor=ACME,
         invoice={"amount": 500.0, "invoice_number": "INV-1", "raw_text": "ACME Incorporated invoice INV-1, $500."},
         past_invoices=[{"amount": 500.0, "invoice_number": "INV-1"}],
@@ -2228,14 +2527,72 @@ CASES = [
         expected_tools=["check_duplicate_invoice"],
     ),
     EvalCase(
-        name="03_vendor_name_drift_approve",
+        # pairs with 02 -- near-duplicate, not exact, so escalate rather than reject
+        name="03_near_duplicate_escalate",
         vendor=ACME,
-        invoice={"amount": 500.0, "raw_text": "Acme Inc invoice, $500, no PO."},  # note: drifted name in the text
+        invoice={"amount": 500.0, "invoice_number": "INV-1-A", "raw_text": "ACME Incorporated invoice INV-1-A, $500."},
+        past_invoices=[{"amount": 500.0, "invoice_number": "INV-1"}],
+        expected_decision="escalate",
+        expected_tools=["check_duplicate_invoice"],
+    ),
+    EvalCase(
+        name="04_vendor_name_drift_approve",
+        vendor=ACME,
+        invoice={"amount": 500.0, "raw_text": "Acme Inc invoice, $500, no PO."},  # drifted name in the text
         expected_decision="approve",
         expected_tools=["lookup_vendor"],
     ),
     EvalCase(
-        name="04_amount_outlier_escalate",
+        # §III.A Step 1: vendor must be correctly set up before payment
+        name="05_vendor_not_on_file_escalate",
+        vendor=None,
+        invoice={"amount": 500.0, "raw_text": "Nonesuch Trading LLC invoice, $500, no PO."},
+        expected_decision="escalate",
+        expected_tools=["lookup_vendor"],
+    ),
+
+    # --- Cases 6-9, 11: depend on rules that exist ONLY in the policy.
+    # --- Expected to fail at the Phase 4 baseline; that gap is the measurement.
+    EvalCase(
+        # 6% and $400 -- inside BOTH the percentage and the dollar cap
+        name="06_po_variance_within_tolerance_approve",
+        vendor=ACME,
+        invoice={"amount": 6400.0, "po_number": "PO-2", "raw_text": "ACME Incorporated invoice, $6,400, PO-2."},
+        purchase_order={"po_number": "PO-2", "amount": 6000.0},
+        expected_decision="approve",
+        expected_tools=["get_purchase_order", "search_policy_tool"],
+    ),
+    EvalCase(
+        # pairs with 06 -- 15% and $3,000, outside both limits
+        name="07_po_variance_outside_tolerance_escalate",
+        vendor=ACME,
+        invoice={"amount": 23000.0, "po_number": "PO-3", "raw_text": "ACME Incorporated invoice, $23,000, PO-3."},
+        purchase_order={"po_number": "PO-3", "amount": 20000.0},
+        expected_decision="escalate",
+        expected_tools=["get_purchase_order", "search_policy_tool"],
+    ),
+    EvalCase(
+        # 4% but $2,500 absolute: inside the percentage, OUTSIDE the dollar cap.
+        # "the lesser of the two" governs -- catches an agent that skims "10 percent".
+        name="08_po_variance_lesser_of_two_escalate",
+        vendor=ACME,
+        invoice={"amount": 65000.0, "po_number": "PO-4", "raw_text": "ACME Incorporated invoice, $65,000, PO-4."},
+        purchase_order={"po_number": "PO-4", "amount": 62500.0},
+        expected_decision="escalate",
+        expected_tools=["get_purchase_order", "search_policy_tool"],
+    ),
+    EvalCase(
+        # The policy defers the PO-required threshold to the Procurement Procedures,
+        # a document NOT in the corpus. Correct behavior is to escalate rather than
+        # invent a number -- tests whether the agent knows the limits of what it read.
+        name="09_large_invoice_no_po_escalate",
+        vendor=ACME,
+        invoice={"amount": 40000.0, "raw_text": "ACME Incorporated invoice, $40,000, no purchase order referenced."},
+        expected_decision="escalate",
+        expected_tools=["search_policy_tool"],
+    ),
+    EvalCase(
+        name="10_amount_outlier_escalate",
         vendor=ACME,
         invoice={"amount": 25000.0, "raw_text": "ACME Incorporated invoice, $25,000, no PO."},
         past_invoices=[{"amount": 900.0}, {"amount": 1000.0}, {"amount": 1100.0}],
@@ -2243,36 +2600,18 @@ CASES = [
         expected_tools=["get_invoice_history"],
     ),
     EvalCase(
-        name="05_po_mismatch_escalate",
+        # §IV.F Currency of payments -- a valid non-USD invoice should still approve,
+        # with the currency handling cited rather than treated as an anomaly.
+        name="11_non_usd_currency_approve",
         vendor=ACME,
-        invoice={"amount": 5000.0, "po_number": "PO-1", "raw_text": "ACME Incorporated invoice, $5,000, PO-1."},
-        purchase_order={"po_number": "PO-1", "amount": 2000.0},
-        expected_decision="escalate",
-        expected_tools=["get_purchase_order"],
-    ),
-    EvalCase(
-        name="06_bank_details_changed_escalate",
-        vendor=ACME,
-        invoice={"amount": 500.0, "raw_text": "ACME Incorporated invoice, $500. New bank account: IBAN GB99DIFFERENT."},
-        expected_decision="escalate",
-        expected_tools=["lookup_vendor"],
-    ),
-    EvalCase(
-        name="07_large_invoice_no_second_approval_escalate",
-        vendor=ACME,
-        invoice={"amount": 15000.0, "raw_text": "ACME Incorporated invoice, $15,000, no PO, no approval notes."},
-        expected_decision="escalate",
-        expected_tools=["search_documents_tool"],
-    ),
-    EvalCase(
-        name="08_large_invoice_with_second_approval_approve",
-        vendor=ACME,
-        invoice={"amount": 15000.0, "raw_text": "ACME Incorporated invoice, $15,000. Second approval on file: J. Rivera, 2026-07-20."},
+        invoice={"amount": 4500.0, "po_number": "PO-5",
+                 "raw_text": "ACME Incorporated invoice, EUR 4,500.00, PO-5. Payment in local currency."},
+        purchase_order={"po_number": "PO-5", "amount": 4500.0},
         expected_decision="approve",
-        expected_tools=["search_documents_tool"],
+        expected_tools=["search_policy_tool"],
     ),
     EvalCase(
-        name="09_low_quality_scan_forced_escalate",
+        name="12_low_quality_scan_forced_escalate",
         vendor=None,
         invoice={"amount": None, "raw_text": "???ACME??? invoi... $5??.00 ... due ??/??/2026"},
         expected_decision="escalate",
@@ -2283,43 +2622,70 @@ CASES = [
 
 **Step 2: Wire a runner script**
 
+The runner writes results to a JSON file as well as printing them, so the Phase 4 baseline can be compared against the Phase 5 re-run rather than remembered.
+
 ```python
 # backend/app/eval/report.py
 import asyncio
+import json
+import sys
 from app.db import SessionLocal
 from app.eval.suite import CASES
 from app.eval.harness import run_case
-from app.eval.graders import grade_outcome, grade_tool_calls, grade_groundedness
+from app.eval.graders import grade_outcome, grade_tool_calls
 
-async def run_all():
+async def run_all(label: str):
+    results = {}
     async with SessionLocal() as session:
         for case in CASES:
             result = await run_case(session, case, trials=3)
             outcome_passes = [grade_outcome(case, t) for t in result.trials]
             tool_passes = [grade_tool_calls(case, t) for t in result.trials]
-            pass_at_1 = outcome_passes[0]
-            pass_hat_k = all(outcome_passes)
-            print(f"{case.name}: pass@1={pass_at_1} pass^{len(outcome_passes)}={pass_hat_k} tool_calls_ok={all(tool_passes)}")
+            results[case.name] = {
+                "pass_at_1": outcome_passes[0],
+                "pass_hat_k": all(outcome_passes),
+                "tool_calls_ok": all(tool_passes),
+                "trials": [
+                    {"decision": t.decision, "confidence": t.confidence, "tools_called": t.tools_called}
+                    for t in result.trials
+                ],
+            }
+            r = results[case.name]
+            print(f"{case.name}: pass@1={r['pass_at_1']} pass^3={r['pass_hat_k']} tools_ok={r['tool_calls_ok']}")
             for i, trial in enumerate(result.trials):
                 print(f"    trial {i}: decision={trial.decision} confidence={trial.confidence} tools={trial.tools_called}")
 
+    passed = sum(1 for r in results.values() if r["pass_at_1"])
+    print(f"\n{label}: {passed}/{len(CASES)} pass@1")
+
+    path = f"eval_results_{label}.json"
+    with open(path, "w") as f:
+        json.dump(results, f, indent=2)
+    print(f"wrote {path}")
+
 if __name__ == "__main__":
-    asyncio.run(run_all())
+    label = sys.argv[1] if len(sys.argv) > 1 else "run"
+    asyncio.run(run_all(label))
 ```
 
-**Step 3: Run it and read every transcript**
+**Step 3: Run the baseline and read every transcript**
 
 ```bash
-cd backend && python -m app.eval.report
+cd backend && python -m app.eval.report baseline
 ```
 
-Expected: some cases fail on the first run — per the evals framework, read *why* before assuming the agent is wrong. A case failing because the seed data doesn't actually contain what the grader expects is a broken task, not an incapable agent (Step 6/Step 7 in `AI-Agent-Evals.md`).
+This is the Phase 4 baseline. Two things to do with it:
+
+1. **Read the transcripts, don't just read the score.** Per Step 6 of `AI-Agent-Evals.md`, a failure should look *fair* — it should be obvious what the agent got wrong and why. If a case fails because the seed data doesn't contain what the grader checks for, that's a broken task, not an incapable agent (Step 7). Fix those before treating the number as meaningful.
+2. **Expect cases 6-9 and 11 to fail**, and confirm they fail *for the predicted reason* — the agent guessing at a tolerance or threshold it has no way to look up. If one of them passes, read why: the agent may have guessed a plausible number and gotten lucky, which is worth knowing, or the case may not actually require the policy.
+
+Commit the baseline JSON — it's the thing Phase 5 is measured against.
 
 **Step 4: Commit**
 
 ```bash
-git add backend/app/eval/suite.py backend/app/eval/report.py
-git commit -m "feat: add 9 balanced eval cases and pass@1/pass^k reporting"
+git add backend/app/eval/suite.py backend/app/eval/report.py backend/eval_results_baseline.json
+git commit -m "feat: add 12 paired eval cases, pass@1/pass^k reporting, and baseline results"
 ```
 
 ---
@@ -2370,7 +2736,7 @@ async def test_eval_run_endpoint_returns_case_results():
         response = await client.post("/eval/run")
     assert response.status_code == 200
     body = response.json()
-    assert len(body["cases"]) == 9
+    assert len(body["cases"]) == 12
     assert "pass_at_1" in body["cases"][0]
 ```
 
@@ -2426,9 +2792,97 @@ git commit -m "feat: add FastAPI app with health check and POST /eval/run"
 
 ---
 
+### Task 29: Wire `search_policy` into the loop and re-measure — **PHASE 5**
+
+The last task. Everything in Phase 5 up to here built the retrieval machinery; this connects it and produces the comparison the resequencing exists for.
+
+**Files:**
+- Modify: `backend/app/agent/loop.py`
+- Modify: `backend/app/agent/prompts.py`
+
+**Step 1: Add the tool definition** — one entry in `TOOL_DEFINITIONS`, at the marked spot:
+
+```python
+    {"name": "search_policy_tool",
+     "description": "Search the written AP policy for the clauses governing this invoice. "
+                    "Returns policy sections with their headings.",
+     "input_schema": {"type": "object",
+                      "properties": {"query": {"type": "string"}},
+                      "required": ["query"]}},
+```
+
+**Step 2: Add the dispatch branch**, at the marked spot in `_dispatch`:
+
+```python
+    if name == "search_policy_tool":
+        return await tool_impls.search_policy_tool(session, **input)
+```
+
+**Step 3: Append the policy sentence to `SYSTEM_PROMPT`** (the text given in Task 22).
+
+Change nothing else. The eval cases, graders, harness, and the other five tools stay exactly as they were — otherwise the comparison measures several changes at once and tells you nothing about retrieval specifically.
+
+**Step 4: Load the policy corpus**
+
+```bash
+python -c "
+import asyncio, pdfplumber
+from app.db import SessionLocal
+from app.rag.chunking import chunk_policy_text
+from app.rag.store import store_policy_chunks
+
+async def main():
+    with pdfplumber.open('fixtures/policy/FINA_Accounts_Payable.pdf') as pdf:
+        text = '\n'.join((p.extract_text() or '') for p in pdf.pages)
+    async with SessionLocal() as session:
+        chunks = chunk_policy_text(text)
+        await store_policy_chunks(session, chunks)
+        print(f'loaded {len(chunks)} policy chunks')
+
+asyncio.run(main())
+"
+```
+
+**Step 5: Re-run the identical suite**
+
+```bash
+python -m app.eval.report with_rag
+```
+
+**Step 6: Compare**
+
+```bash
+python -c "
+import json
+base = json.load(open('eval_results_baseline.json'))
+rag = json.load(open('eval_results_with_rag.json'))
+print(f'{\"case\":<45} {\"baseline\":>9} {\"with_rag\":>9}')
+for name in base:
+    b, r = base[name]['pass_at_1'], rag[name]['pass_at_1']
+    flag = '  <-- changed' if b != r else ''
+    print(f'{name:<45} {str(b):>9} {str(r):>9}{flag}')
+print()
+print('baseline:', sum(1 for v in base.values() if v['pass_at_1']), '/', len(base))
+print('with rag:', sum(1 for v in rag.values() if v['pass_at_1']), '/', len(rag))
+"
+```
+
+**Step 7: Read the transcripts for the cases that changed.** The number alone isn't the finding — the finding is *why*. For each newly-passing case, confirm the agent actually retrieved the governing clause and reasoned from it, rather than passing by luck. Case 8 (the "lesser of the two" case) is the sharpest test: passing it requires the agent to have read the qualifier, not just matched on "10 percent."
+
+Also read any case that got *worse*. Retrieval can hurt — an agent handed five policy clauses may over-apply one that doesn't govern, and start escalating things it previously approved correctly. That's a real finding about tool design, and exactly the kind of thing the paired cases (6 vs 7 vs 8) are shaped to expose.
+
+**Step 8: Commit**
+
+```bash
+git add backend/app/agent/loop.py backend/app/agent/prompts.py backend/eval_results_with_rag.json
+git commit -m "feat: wire search_policy into the agent loop; record post-RAG eval results"
+```
+
+---
+
 ## What's next
 
-This plan stops at a working backend: extraction, RAG, a tool-using agent, and an eval harness you can hit via `POST /eval/run`. The remaining pieces from `Project.MD` — `POST /invoices`, `GET /invoices`, approve/reject endpoints, and the React dashboard — get their own plan once you've run this one end-to-end and are happy with how the agent performs on the 9 cases.
+This plan stops at a working backend: extraction, a tool-using agent, an eval harness you can hit via `POST /eval/run`, and a measured before/after on what policy retrieval actually buys. The remaining pieces from `Project.MD` — `POST /invoices`, `GET /invoices`, approve/reject endpoints, and the React dashboard — get their own plan once you've run this one end-to-end and are happy with how the agent performs on the 12 cases.
 
 ## Out-of-band addition: stateless `POST /extract` + minimal frontend
 
