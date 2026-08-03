@@ -7,6 +7,7 @@ from app.agent.tools import (
     get_invoice_history,
     get_purchase_order,
     lookup_vendor,
+    submit_recommendation,
 )
 from app.models import Invoice, PurchaseOrder, Vendor
 
@@ -314,3 +315,61 @@ async def test_surfaces_the_lesser_of_the_two_case(db_session):
 
     assert result["variance_amount"] == pytest.approx(2500.0)
     assert result["variance_percent"] == pytest.approx(4.0)
+
+
+# --- submit_recommendation -------------------------------------------------
+#
+# Threshold is 0.7 (CONFIDENCE_ESCALATION_THRESHOLD), so 0.9 is confident and
+# 0.4 is not.
+
+
+def test_passes_through_a_confident_decision():
+    result = submit_recommendation(decision="approve", confidence=0.9, reasoning="All checks clean.")
+    assert result["final_decision"] == "approve"
+
+
+def test_overrides_a_low_confidence_approval():
+    """The agent proposes; the system decides. An unsure approval is the exact
+    case human review exists for, so the agent is not permitted to waive it."""
+    result = submit_recommendation(decision="approve", confidence=0.4, reasoning="Probably fine.")
+    assert result["final_decision"] == "escalate"
+
+
+def test_overrides_a_low_confidence_rejection_too():
+    """Rejection is not the safe default. Wrongly refusing a legitimate invoice
+    damages a vendor relationship and stalls a real payment -- an unsure reject
+    belongs in front of a human just as much as an unsure approve."""
+    result = submit_recommendation(decision="reject", confidence=0.4, reasoning="Feels off.")
+    assert result["final_decision"] == "escalate"
+
+
+def test_leaves_an_explicit_escalation_alone():
+    result = submit_recommendation(decision="escalate", confidence=0.3, reasoning="Unclear.")
+    assert result["final_decision"] == "escalate"
+    assert result["overridden"] is False
+
+
+def test_records_what_the_agent_actually_said():
+    """The audit trail has to show the agent proposed approval and the system
+    overrode it -- otherwise an override is indistinguishable from the agent
+    having escalated on its own judgment."""
+    result = submit_recommendation(decision="approve", confidence=0.4, reasoning="Probably fine.")
+    assert result["original_decision"] == "approve"
+    assert result["final_decision"] == "escalate"
+    assert result["overridden"] is True
+
+
+def test_escalates_an_unrecognized_decision():
+    """The tool runner derives the schema from a plain `str`, so nothing stops
+    the model returning 'approved' or 'ok'. An unparseable decision must fail
+    toward human review, never toward payment."""
+    result = submit_recommendation(decision="approved", confidence=0.95, reasoning="Looks good.")
+    assert result["final_decision"] == "escalate"
+    assert result["overridden"] is True
+
+
+def test_escalates_an_out_of_range_confidence():
+    """A confidence of 1.4 is not high confidence, it is a broken signal, and a
+    broken signal must not be read as clearing the threshold."""
+    result = submit_recommendation(decision="approve", confidence=1.4, reasoning="Certain.")
+    assert result["final_decision"] == "escalate"

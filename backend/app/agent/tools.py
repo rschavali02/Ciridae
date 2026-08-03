@@ -15,7 +15,10 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.models import Invoice, PurchaseOrder
+
+VALID_DECISIONS = ("approve", "reject", "escalate")
 
 # Set from measured trigram scores against the seeded vendors, not by feel:
 #
@@ -244,3 +247,49 @@ async def get_purchase_order(
         )
 
     return result
+
+
+def submit_recommendation(decision: str, confidence: float, reasoning: str) -> dict:
+    """Record the agent's final decision, subject to a confidence floor.
+
+    The agent proposes; this function decides. Below the configured threshold
+    the decision becomes `escalate` regardless of what the agent asked for --
+    the whole point of the floor is that a model which is confidently wrong
+    must not be able to talk its way past human review.
+
+    The override applies to rejections as well as approvals. Refusal is not the
+    safe default: wrongly rejecting a legitimate invoice stalls a real payment
+    and damages a vendor relationship. Both directions carry consequences, so
+    uncertainty in either sends the invoice to a person.
+
+    Malformed input escalates rather than raising. Raising would abort the run
+    and leave the invoice with no decision at all, whereas escalating keeps it
+    moving toward the person who can sort it out -- the same failure direction
+    the confidence floor already encodes.
+    """
+    reasons: list[str] = []
+
+    if decision not in VALID_DECISIONS:
+        reasons.append(f"decision {decision!r} is not one of {VALID_DECISIONS}")
+    if not 0.0 <= confidence <= 1.0:
+        reasons.append(f"confidence {confidence} is outside 0.0-1.0")
+    elif confidence < settings.confidence_escalation_threshold:
+        reasons.append(
+            f"confidence {confidence} is below the "
+            f"{settings.confidence_escalation_threshold} threshold for automated action"
+        )
+
+    # An explicit escalate is already the outcome the floor would force, so it
+    # is not an override. Flagging it as one would make the audit trail read as
+    # though the system overruled an agent that in fact agreed.
+    overridden = bool(reasons) and decision != "escalate"
+    final_decision = "escalate" if reasons else decision
+
+    return {
+        "original_decision": decision,
+        "final_decision": final_decision,
+        "overridden": overridden,
+        "override_reason": "; ".join(reasons) if overridden else None,
+        "confidence": confidence,
+        "reasoning": reasoning,
+    }
