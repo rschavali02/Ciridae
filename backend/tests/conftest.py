@@ -1,4 +1,5 @@
 import pytest_asyncio
+from sqlalchemy import text
 from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
@@ -39,6 +40,17 @@ async def db_session():
         # -- which raises MissingGreenlet rather than reloading.
         expire_on_commit=False,
     )
+
+    # Start from an empty database, not from whatever the last `seed_vendors.py`
+    # run left behind. Ambient rows are not neutral: a seeded "ACME Incorporated"
+    # sitting alongside the fixture's own copy makes lookup_vendor report an
+    # ambiguous match, and the test appears to fail for a reason that has nothing
+    # to do with the code. The deletes are inside the outer transaction, so the
+    # rollback below restores the real data.
+    for table in ("agent_runs", "audit_log", "line_items", "documents", "invoices", "vendors"):
+        await session.execute(text(f"DELETE FROM {table}"))
+    await session.commit()
+
     try:
         yield session
     finally:
