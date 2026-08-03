@@ -45,7 +45,11 @@ This hybrid approach is the one with an actual cost/failure-mode story: cheap pa
 
 ## The agent + tools
 
-Raw Anthropic SDK tool-use loop — send the invoice + system prompt, read `tool_use` blocks, execute the matching function, feed back `tool_result`, repeat until `submit_recommendation` is called or an 8-turn cap is hit.
+The agent uses the Anthropic SDK's **Tool Runner** (`client.beta.messages.tool_runner`) — the documented default for a custom-tool agent. It drives the request → execute → loop cycle, so there's no hand-written `while`, no hand-maintained JSON schema array, and no name→function dispatch table.
+
+Each tool's schema is derived from its Python signature and docstring, which creates one design constraint worth understanding: **tool parameters must be exactly what Claude should supply.** Our tools need a DB session and a transcript to write to, neither of which the model should see or invent. So the plain tool functions stay as-is (and stay unit-testable), and a thin `build_tools()` layer wraps each one in a decorated closure that binds session and transcript invisibly. That's the general answer to "my tool needs context the model shouldn't control."
+
+Docstrings become load-bearing: the docstring *is* the description Claude reads when deciding whether to call a tool, and each `Args:` line is a parameter description. They're written prescriptively — when to call the tool, not just what it does.
 
 - `lookup_vendor(vendor_name)` — fuzzy-resolves against `vendors`; returns matched id/name/bank details or "no match" below a similarity threshold. This is where vendor-name drift surfaces.
 - `get_invoice_history(vendor_id, lookback_days)` — summary stats only (avg amount, count, most recent date), not raw rows — the agent reasons over a signal, not a table it has to summarize itself.
@@ -105,4 +109,4 @@ The agent's tool design and the eval harness are the highest-value blocks — pr
 
 ## Bottom line
 
-Four things, built deep instead of many things built shallow: a dashboard on real invoice data, a hand-built tool-use loop (not a framework's agent executor), a RAG pipeline over a corpus that genuinely needs retrieval, and an eval harness with paired cases, code-based + calibrated LLM graders, and pass@1/pass^3 reporting. This is a stronger "tell me about a project" answer than the broader version — narrower scope, but everything in it is something you can open the transcript for and explain, including *why* RAG points at the policy and not at the invoices.
+Four things, built deep instead of many things built shallow: a dashboard on real invoice data, an agent built on the SDK's Tool Runner with hand-designed tools, a RAG pipeline over a corpus that genuinely needs retrieval, and an eval harness with paired cases, code-based + calibrated LLM graders, and pass@1/pass^3 reporting. This is a stronger "tell me about a project" answer than the broader version — narrower scope, but everything in it is something you can open the transcript for and explain, including *why* RAG points at the policy and not at the invoices.

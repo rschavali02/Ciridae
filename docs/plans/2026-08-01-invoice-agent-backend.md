@@ -4,7 +4,7 @@
 
 **Goal:** Build the backend for the invoice agent — extraction pipeline, RAG, a tool-using agent, and an eval harness — so it can be driven from a script/API before any frontend exists.
 
-**Architecture:** Work outward from the messy PDFs themselves: get extraction working as plain Python first (no database at all), then add persistence only once the agent's tools need to query it. A hand-rolled Anthropic tool-use loop drives the agent. Policy RAG is added **last, as a measured second pass** — see Build order below.
+**Architecture:** Work outward from the messy PDFs themselves: get extraction working as plain Python first (no database at all), then add persistence only once the agent's tools need to query it. The agent uses the Anthropic SDK's **Tool Runner** (`client.beta.messages.tool_runner`), which drives the request → execute → loop cycle over tools we define. Policy RAG is added **last, as a measured second pass** — see Build order below.
 
 **Tech Stack:** Python 3.12, `pdfplumber`, `anthropic` SDK, `voyageai` SDK, Postgres 16 + pgvector (Docker Compose), SQLAlchemy 2.0 (async, `asyncpg` driver), Alembic, FastAPI, pytest, pytest-asyncio.
 
@@ -31,7 +31,7 @@ The original plan built RAG in Phase 2, before the agent existed. It's been move
 
 Phase 3 builds the agent with only the five structured tools — `lookup_vendor`, `get_invoice_history`, `check_duplicate_invoice`, `get_purchase_order`, `submit_recommendation`. Phase 4 then scores it against all 12 eval cases and records the result. That baseline is expected to be *partial*, and the failures are predictable: cases 1-4 and 10 run entirely off structured tools and should pass, while cases 6, 7, 8, 9, and 11 depend on rules that exist nowhere except the policy document — the 10%/$1,000 lesser-of-two PO tolerance, the PO-required threshold, the currency handling. With no way to read the policy, the agent has to guess at those.
 
-Phase 5 then adds policy retrieval as a single additive change (`TOOL_DEFINITIONS` gains one entry, `_dispatch` gains one branch, the eval cases don't change at all) and re-runs the identical suite.
+Phase 5 then adds policy retrieval as a single additive change (one more decorated tool in `build_tools`, one sentence appended to the system prompt, the eval cases don't change at all) and re-runs the identical suite.
 
 The point is to make "does RAG actually earn its place here?" a number you measured rather than an assertion you accepted. It also mirrors the capability-eval loop from `AI-Agent-Evals.md`: measure what the agent can do, find where it breaks, make one change, re-measure. If the jump is small, that is a real and useful finding — not a failure.
 
@@ -1988,60 +1988,70 @@ git commit -m "feat: add submit_recommendation tool with server-side confidence 
 
 ---
 
-### Task 22: Tool-use loop orchestrator
+### Task 22: Wire the tools into the Tool Runner
+
+The SDK's Tool Runner drives the request → execute → loop cycle, so there is no hand-written `while` loop, no `TOOL_DEFINITIONS` array of JSON schemas, and no name→function dispatch table. Those three things are what the runner replaces.
+
+**The one design constraint that shapes this task.** The runner derives each tool's JSON schema from its **Python signature and docstring**, so a tool's parameters must be exactly what Claude should supply. Our tool functions from Tasks 16-21 take a `session` (and need to write to a transcript) — neither of which Claude should ever see or invent. The fix is a thin wrapper layer: keep the plain functions exactly as built (they stay unit-testable against `db_session`), and wrap each in a decorated closure that binds `session` and `transcript` invisibly.
+
+That split is worth internalizing — it's the general answer to "my tool needs context the model shouldn't control."
+
+**Docstrings are now load-bearing.** With hand-written schemas the `description` field was obviously part of the API contract. Under the runner, the docstring *is* the description Claude reads to decide whether to call the tool, and each `Args:` line is a parameter description. A vague docstring is a silently worse tool. Per the tool-design guidance, be prescriptive about **when** to call it, not just what it does.
 
 **Files:**
 - Create: `backend/app/agent/prompts.py`
-- Create: `backend/app/agent/loop.py`
-- Test: `backend/tests/test_loop.py`
+- Create: `backend/app/agent/runner.py`
+- Test: `backend/tests/test_runner.py`
 
-**Step 1: Write the failing test (mocks the Anthropic client so the loop's mechanics are tested deterministically, not live model behavior)**
+**Step 1: Write the failing test**
+
+The manual loop could be tested by monkeypatching `messages.create` and feeding it fake responses. The runner owns that loop internally, so there's no seam to mock without reaching into SDK internals — which would test the mock, not the code. Test what's actually ours instead: that the tool set is built correctly and bound to the session.
 
 ```python
-# backend/tests/test_loop.py
+# backend/tests/test_runner.py
 import pytest
-from unittest.mock import AsyncMock, MagicMock
-from app.agent.loop import run_agent
+from app.agent.runner import build_tools
+from app.agent.transcript import RunTranscript
 
-class FakeToolUseBlock:
-    type = "tool_use"
-    def __init__(self, name, input, id="tool_1"):
-        self.name, self.input, self.id = name, input, id
-
-class FakeTextBlock:
-    type = "text"
-    def __init__(self, text):
-        self.text = text
 
 @pytest.mark.asyncio
-async def test_loop_executes_tool_then_stops_on_submit_recommendation(db_session, seeded_invoice, monkeypatch):
-    call_count = {"n": 0}
+async def test_build_tools_exposes_the_five_structured_tools(db_session, seeded_invoice):
+    transcript = RunTranscript(invoice_id=seeded_invoice.id)
+    tools = build_tools(db_session, transcript, seeded_invoice)
+    names = {t.name for t in tools}
+    assert names == {
+        "lookup_vendor",
+        "get_invoice_history",
+        "check_duplicate_invoice",
+        "get_purchase_order",
+        "submit_recommendation",
+    }
 
-    def fake_create(**kwargs):
-        call_count["n"] += 1
-        response = MagicMock()
-        if call_count["n"] == 1:
-            response.content = [FakeToolUseBlock("lookup_vendor", {"vendor_name": "Acme"})]
-            response.stop_reason = "tool_use"
-        else:
-            response.content = [FakeToolUseBlock(
-                "submit_recommendation",
-                {"decision": "approve", "confidence": 0.9, "reasoning": "vendor matched"},
-            )]
-            response.stop_reason = "tool_use"
-        return response
 
-    import app.agent.loop as loop_module
-    monkeypatch.setattr(loop_module.client.messages, "create", fake_create)
+@pytest.mark.asyncio
+async def test_tools_hide_session_from_the_model_schema(db_session, seeded_invoice):
+    """Claude must never be asked to supply a DB session or a transcript."""
+    transcript = RunTranscript(invoice_id=seeded_invoice.id)
+    for tool in build_tools(db_session, transcript, seeded_invoice):
+        params = tool.input_schema.get("properties", {})
+        assert "session" not in params
+        assert "transcript" not in params
 
-    transcript = await run_agent(db_session, invoice=seeded_invoice)
-    assert transcript.decision == "approve"
-    assert len(transcript.tool_calls) == 2  # lookup_vendor, then submit_recommendation
+
+@pytest.mark.asyncio
+async def test_calling_a_tool_records_it_on_the_transcript(db_session, seeded_vendor, seeded_invoice):
+    transcript = RunTranscript(invoice_id=seeded_invoice.id)
+    tools = {t.name: t for t in build_tools(db_session, transcript, seeded_invoice)}
+    await tools["lookup_vendor"].call({"vendor_name": "Acme Inc"})
+    assert transcript.tool_calls[0]["tool"] == "lookup_vendor"
+    assert transcript.tool_calls[0]["output"]["matched"] is True
 ```
+
+The exact attribute names for reading a built tool's schema (`.name`, `.input_schema`) and invoking it directly (`.call(...)`) are SDK surface — if the first run errors on an attribute, read the error and adjust rather than guessing a second time. The *assertions* are the point: no `session` in the schema, and calling a tool lands on the transcript.
 
 **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_loop.py -v`
+Run: `pytest tests/test_runner.py -v`
 Expected: FAIL — module doesn't exist
 
 **Step 3: Write `backend/app/agent/prompts.py`**
@@ -2065,101 +2075,192 @@ and cite the section you relied on in your reasoning. Do not assert a rule you h
 not retrieved."""
 ```
 
-**Step 4: Write `backend/app/agent/loop.py`**
+**Step 4: Write `backend/app/agent/runner.py`**
 
 ```python
-from anthropic import Anthropic
+import json
+
+from anthropic import AsyncAnthropic, beta_async_tool
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.config import settings
 from app.agent.prompts import SYSTEM_PROMPT
 from app.agent.transcript import RunTranscript
 from app.agent import tools as tool_impls
+from app.models import Invoice
 
-client = Anthropic(api_key=settings.anthropic_api_key)
+client = AsyncAnthropic(api_key=settings.anthropic_api_key)
 
-TOOL_DEFINITIONS = [
-    {"name": "lookup_vendor", "description": "Resolve a vendor name against records on file.",
-     "input_schema": {"type": "object", "properties": {"vendor_name": {"type": "string"}}, "required": ["vendor_name"]}},
-    {"name": "get_invoice_history", "description": "Get summary stats of past invoices for a vendor.",
-     "input_schema": {"type": "object", "properties": {"vendor_id": {"type": "string"}, "lookback_days": {"type": "integer"}}, "required": ["vendor_id"]}},
-    {"name": "check_duplicate_invoice", "description": "Check whether this invoice has already been paid.",
-     "input_schema": {"type": "object", "properties": {"vendor_id": {"type": "string"}, "amount": {"type": "number"}, "invoice_number": {"type": ["string", "null"]}}, "required": ["vendor_id", "amount"]}},
-    {"name": "get_purchase_order", "description": "Look up a purchase order by number.",
-     "input_schema": {"type": "object", "properties": {"po_number": {"type": "string"}}, "required": ["po_number"]}},
-    # PHASE 5 adds one more entry here -- see below. Leave it out for the baseline.
-    {"name": "submit_recommendation", "description": "Submit your final decision. Call this last.",
-     "input_schema": {"type": "object", "properties": {
-         "decision": {"type": "string", "enum": ["approve", "reject", "escalate"]},
-         "confidence": {"type": "number"},
-         "reasoning": {"type": "string"},
-     }, "required": ["decision", "confidence", "reasoning"]}},
-]
+MAX_ITERATIONS = 8
 
-MAX_TURNS = 8
 
-async def _dispatch(session, name: str, input: dict):
-    if name == "lookup_vendor":
-        return await tool_impls.lookup_vendor(session, **input)
-    if name == "get_invoice_history":
-        return await tool_impls.get_invoice_history(session, **input)
-    if name == "check_duplicate_invoice":
-        return await tool_impls.check_duplicate_invoice(session, **input)
-    if name == "get_purchase_order":
-        return await tool_impls.get_purchase_order(session, **input)
-    # PHASE 5 adds the search_policy_tool branch here.
-    if name == "submit_recommendation":
-        return tool_impls.submit_recommendation(**input)
-    raise ValueError(f"Unknown tool: {name}")
+def build_tools(session: AsyncSession, transcript: RunTranscript, invoice: Invoice) -> list:
+    """Build the agent's tool set for one invoice review.
+
+    Each tool is a closure over `session`, `transcript`, and `invoice` so that
+    none of them appear in the schema Claude sees -- the runner derives that
+    schema from the signature, and the model must only ever supply values it
+    can legitimately know. Recording to the transcript happens here rather than
+    in the loop, since the runner owns the loop.
+    """
+
+    @beta_async_tool
+    async def lookup_vendor(vendor_name: str) -> str:
+        """Resolve a vendor name against the vendors on file.
+
+        Call this first on every invoice, before judging anything else -- the
+        vendor id it returns is required by the history and duplicate checks,
+        and a vendor that fails to resolve is itself a finding.
+
+        Args:
+            vendor_name: The vendor name exactly as printed on the invoice.
+        """
+        out = await tool_impls.lookup_vendor(session, vendor_name=vendor_name)
+        transcript.record_tool_call("lookup_vendor", {"vendor_name": vendor_name}, out)
+        return json.dumps(out)
+
+    @beta_async_tool
+    async def get_invoice_history(vendor_id: str, lookback_days: int = 365) -> str:
+        """Summary statistics for this vendor's past invoices.
+
+        Call this to judge whether the current amount is normal for this
+        vendor. Returns aggregates only, not individual invoices.
+
+        Args:
+            vendor_id: Vendor id returned by lookup_vendor.
+            lookback_days: How far back to look. Defaults to one year.
+        """
+        args = {"vendor_id": vendor_id, "lookback_days": lookback_days}
+        out = await tool_impls.get_invoice_history(session, **args)
+        transcript.record_tool_call("get_invoice_history", args, out)
+        return json.dumps(out)
+
+    @beta_async_tool
+    async def check_duplicate_invoice(vendor_id: str, amount: float,
+                                      invoice_number: str | None = None) -> str:
+        """Check whether this invoice has already been paid.
+
+        Call this on every invoice before approving. Duplicate submission is a
+        common vendor error and a known fraud pattern.
+
+        Args:
+            vendor_id: Vendor id returned by lookup_vendor.
+            amount: The invoice total.
+            invoice_number: The invoice number, if the invoice has one.
+        """
+        args = {"vendor_id": vendor_id, "amount": amount, "invoice_number": invoice_number}
+        out = await tool_impls.check_duplicate_invoice(session, **args)
+        transcript.record_tool_call("check_duplicate_invoice", args, out)
+        return json.dumps(out)
+
+    @beta_async_tool
+    async def get_purchase_order(po_number: str) -> str:
+        """Look up a purchase order by number.
+
+        Call this whenever the invoice references a PO, to check the PO exists
+        and compare its amount against the invoice total.
+
+        Args:
+            po_number: The purchase order number referenced on the invoice.
+        """
+        out = await tool_impls.get_purchase_order(session, po_number=po_number)
+        transcript.record_tool_call("get_purchase_order", {"po_number": po_number}, out)
+        return json.dumps(out)
+
+    @beta_async_tool
+    async def submit_recommendation(decision: str, confidence: float, reasoning: str) -> str:
+        """Submit your final decision. Call this exactly once, last.
+
+        Args:
+            decision: One of "approve", "reject", or "escalate".
+            confidence: Your confidence from 0.0 to 1.0.
+            reasoning: Why you reached this decision, citing what the tools returned.
+        """
+        args = {"decision": decision, "confidence": confidence, "reasoning": reasoning}
+        out = tool_impls.submit_recommendation(**args)
+        transcript.record_tool_call("submit_recommendation", args, out)
+        transcript.record_final(
+            decision=out["final_decision"],
+            confidence=out["confidence"],
+            reasoning=out["reasoning"],
+        )
+        return json.dumps(out)
+
+    return [
+        lookup_vendor,
+        get_invoice_history,
+        check_duplicate_invoice,
+        get_purchase_order,
+        # PHASE 5 appends search_policy here -- leave it out for the baseline.
+        submit_recommendation,
+    ]
+
+
+def describe_invoice(invoice: Invoice) -> str:
+    """Render the invoice for the opening prompt.
+
+    Explicit field selection, not `invoice.__dict__` -- that would leak
+    SQLAlchemy's internal `_sa_instance_state` into the prompt and silently
+    change what the model sees whenever the schema changes.
+    """
+    return json.dumps({
+        "invoice_id": str(invoice.id),
+        "vendor_name_as_printed": invoice.raw_text,
+        "invoice_number": invoice.invoice_number,
+        "amount": float(invoice.amount) if invoice.amount is not None else None,
+        "due_date": invoice.due_date.isoformat() if invoice.due_date else None,
+        "po_number": invoice.po_number,
+    }, indent=2)
+
 
 async def run_agent(session, invoice, source: str = "live") -> RunTranscript:
     transcript = RunTranscript(invoice_id=invoice.id, source=source)
-    messages = [{"role": "user", "content": f"Review this invoice: {invoice.__dict__}"}]
 
-    for _ in range(MAX_TURNS):
-        response = client.messages.create(
-            model="claude-sonnet-5",
-            max_tokens=2048,
-            system=SYSTEM_PROMPT,
-            tools=TOOL_DEFINITIONS,
-            messages=messages,
-        )
-        tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
-        if not tool_use_blocks:
+    runner = client.beta.messages.tool_runner(
+        model="claude-opus-5",
+        max_tokens=16000,
+        system=SYSTEM_PROMPT,
+        tools=build_tools(session, transcript, invoice),
+        messages=[{"role": "user", "content": f"Review this invoice:\n{describe_invoice(invoice)}"}],
+        max_iterations=MAX_ITERATIONS,
+    )
+
+    async for _message in runner:
+        # submit_recommendation records the decision as a side effect, so the
+        # transcript is the signal that the agent is done. Stopping here saves
+        # the wrap-up turn the model would otherwise take after its last tool.
+        if transcript.decision is not None:
             break
 
-        messages.append({"role": "assistant", "content": response.content})
-        tool_results = []
-        for block in tool_use_blocks:
-            output = await _dispatch(session, block.name, block.input)
-            transcript.record_tool_call(block.name, block.input, output)
-            tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": str(output)})
+    if transcript.decision is None:
+        # Ran out of iterations without committing to a decision. Escalate --
+        # never silently approve because the agent went quiet.
+        transcript.record_final(
+            decision="escalate",
+            confidence=0.0,
+            reasoning="Agent did not submit a recommendation within the iteration limit.",
+        )
 
-            if block.name == "submit_recommendation":
-                transcript.record_final(
-                    decision=output["final_decision"],
-                    confidence=output["confidence"],
-                    reasoning=output["reasoning"],
-                )
-                await transcript.save(session)
-                return transcript
-
-        messages.append({"role": "user", "content": tool_results})
-
-    # hit MAX_TURNS without a submitted recommendation — force escalation
-    transcript.record_final(decision="escalate", confidence=0.0, reasoning="Agent did not submit a recommendation within the turn limit.")
     await transcript.save(session)
     return transcript
 ```
 
+Three things worth noticing in that file, because they're the parts that differ from a hand-rolled loop:
+
+- **`max_tokens=16000`, not 2048.** On Claude Opus 5 thinking is on by default, and `max_tokens` caps thinking *plus* response text together. A budget sized for the visible answer alone will truncate mid-decision.
+- **The transcript is the completion signal**, not a `stop_reason` check. `submit_recommendation` records the decision as a side effect of running, so `transcript.decision is not None` means the agent has committed.
+- **Every exit path lands on a decision.** If the iteration cap is hit with nothing submitted, the agent is escalated rather than left in limbo — the same "never silently approve" principle as the confidence threshold.
+
 **Step 5: Run test to verify it passes**
 
-Run: `pytest tests/test_loop.py -v`
+Run: `pytest tests/test_runner.py -v`
 Expected: PASS
 
 **Step 6: Commit**
 
 ```bash
-git add backend/app/agent/prompts.py backend/app/agent/loop.py backend/tests/test_loop.py
-git commit -m "feat: add tool-use loop orchestrator wiring all agent tools together"
+git add backend/app/agent/prompts.py backend/app/agent/runner.py backend/tests/test_runner.py
+git commit -m "feat: wire agent tools into the SDK tool runner"
 ```
 
 ---
@@ -2797,28 +2898,34 @@ git commit -m "feat: add FastAPI app with health check and POST /eval/run"
 The last task. Everything in Phase 5 up to here built the retrieval machinery; this connects it and produces the comparison the resequencing exists for.
 
 **Files:**
-- Modify: `backend/app/agent/loop.py`
+- Modify: `backend/app/agent/runner.py`
 - Modify: `backend/app/agent/prompts.py`
 
-**Step 1: Add the tool definition** — one entry in `TOOL_DEFINITIONS`, at the marked spot:
+**Step 1: Add one decorated tool inside `build_tools`**, at the marked spot:
 
 ```python
-    {"name": "search_policy_tool",
-     "description": "Search the written AP policy for the clauses governing this invoice. "
-                    "Returns policy sections with their headings.",
-     "input_schema": {"type": "object",
-                      "properties": {"query": {"type": "string"}},
-                      "required": ["query"]}},
+    @beta_async_tool
+    async def search_policy(query: str) -> str:
+        """Search the written AP policy for the clauses governing this invoice.
+
+        Call this whenever your decision depends on a rule -- an approval
+        threshold, a tolerance band, a required control -- rather than asserting
+        the rule from memory. Returns policy sections with their headings so you
+        can cite them.
+
+        Args:
+            query: What you need the policy to tell you, in plain language.
+        """
+        out = await tool_impls.search_policy_tool(session, query=query)
+        transcript.record_tool_call("search_policy", {"query": query}, out)
+        return json.dumps(out)
 ```
 
-**Step 2: Add the dispatch branch**, at the marked spot in `_dispatch`:
-
-```python
-    if name == "search_policy_tool":
-        return await tool_impls.search_policy_tool(session, **input)
-```
+**Step 2: Add `search_policy` to the returned list**, at the marked spot (before `submit_recommendation`).
 
 **Step 3: Append the policy sentence to `SYSTEM_PROMPT`** (the text given in Task 22).
+
+That's the whole change — no schema to hand-write, no dispatch branch to add. The tool runner picks up the new tool from the list, and its docstring becomes the description Claude reads.
 
 Change nothing else. The eval cases, graders, harness, and the other five tools stay exactly as they were — otherwise the comparison measures several changes at once and tells you nothing about retrieval specifically.
 
@@ -2874,7 +2981,7 @@ Also read any case that got *worse*. Retrieval can hurt — an agent handed five
 **Step 8: Commit**
 
 ```bash
-git add backend/app/agent/loop.py backend/app/agent/prompts.py backend/eval_results_with_rag.json
+git add backend/app/agent/runner.py backend/app/agent/prompts.py backend/eval_results_with_rag.json
 git commit -m "feat: wire search_policy into the agent loop; record post-RAG eval results"
 ```
 
