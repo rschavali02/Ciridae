@@ -2149,7 +2149,13 @@ def build_tools(session: AsyncSession, transcript: RunTranscript, invoice: Invoi
             invoice_number: The invoice number, if the invoice has one.
         """
         args = {"vendor_id": vendor_id, "amount": amount, "invoice_number": invoice_number}
-        out = await tool_impls.check_duplicate_invoice(session, **args)
+        # exclude_invoice_id is bound here, not exposed to the model: the invoice
+        # under review is already a row in `invoices`, and without excluding it a
+        # vendor+amount query finds itself -- reporting every clean invoice as a
+        # duplicate of itself.
+        out = await tool_impls.check_duplicate_invoice(
+            session, **args, exclude_invoice_id=invoice.id
+        )
         transcript.record_tool_call("check_duplicate_invoice", args, out)
         return json.dumps(out)
 

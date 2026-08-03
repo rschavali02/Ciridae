@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from app.agent.tools import get_invoice_history, lookup_vendor
+from app.agent.tools import check_duplicate_invoice, get_invoice_history, lookup_vendor
 from app.models import Invoice, Vendor
 
 
@@ -154,3 +154,88 @@ async def test_respects_the_lookback_window(db_session, seeded_vendor):
 
     assert result["count"] == 1
     assert result["max_amount"] == pytest.approx(500.0)
+
+
+# --- check_duplicate_invoice -----------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_flags_an_exact_duplicate(db_session, seeded_vendor):
+    """Same vendor, same amount, same invoice number -- already paid."""
+    db_session.add(_paid(seeded_vendor, 500.0, invoice_number="INV-1"))
+    await db_session.commit()
+
+    result = await check_duplicate_invoice(
+        db_session, vendor_id=str(seeded_vendor.id), amount=500.0, invoice_number="INV-1"
+    )
+
+    assert result["match"] == "exact"
+    assert result["prior_invoice"]["invoice_number"] == "INV-1"
+
+
+@pytest.mark.asyncio
+async def test_flags_a_near_duplicate_with_a_suffixed_number(db_session, seeded_vendor):
+    """A resubmission under 'INV-1-A' is the case an equality check misses
+    entirely: filtering on invoice_number = 'INV-1-A' matches nothing, so the
+    agent gets no signal at all for a textbook duplicate-submission pattern."""
+    db_session.add(_paid(seeded_vendor, 500.0, invoice_number="INV-1"))
+    await db_session.commit()
+
+    result = await check_duplicate_invoice(
+        db_session, vendor_id=str(seeded_vendor.id), amount=500.0, invoice_number="INV-1-A"
+    )
+
+    assert result["match"] == "near"
+    assert result["prior_invoice"]["invoice_number"] == "INV-1"
+
+
+@pytest.mark.asyncio
+async def test_flags_a_reused_number_with_a_changed_amount(db_session, seeded_vendor):
+    """Same invoice number, different amount -- an altered-invoice pattern."""
+    db_session.add(_paid(seeded_vendor, 500.0, invoice_number="INV-1"))
+    await db_session.commit()
+
+    result = await check_duplicate_invoice(
+        db_session, vendor_id=str(seeded_vendor.id), amount=750.0, invoice_number="INV-1"
+    )
+
+    assert result["match"] == "near"
+
+
+@pytest.mark.asyncio
+async def test_reports_none_when_nothing_resembles_it(db_session, seeded_vendor):
+    db_session.add(_paid(seeded_vendor, 500.0, invoice_number="INV-1"))
+    await db_session.commit()
+
+    result = await check_duplicate_invoice(
+        db_session, vendor_id=str(seeded_vendor.id), amount=4200.0, invoice_number="INV-99"
+    )
+
+    assert result["match"] == "none"
+
+
+@pytest.mark.asyncio
+async def test_does_not_match_the_invoice_against_itself(db_session, seeded_vendor):
+    """The invoice under review is already a row in `invoices`. Without
+    excluding it, a vendor+amount query finds itself and every clean invoice
+    reports as a duplicate -- rejecting eval case 1 outright."""
+    under_review = Invoice(
+        vendor_id=seeded_vendor.id,
+        amount=5000.0,
+        invoice_number="INV-NEW",
+        status="pending",
+        raw_pdf_path="under_review.pdf",
+    )
+    db_session.add(under_review)
+    await db_session.commit()
+    await db_session.refresh(under_review)
+
+    result = await check_duplicate_invoice(
+        db_session,
+        vendor_id=str(seeded_vendor.id),
+        amount=5000.0,
+        invoice_number="INV-NEW",
+        exclude_invoice_id=under_review.id,
+    )
+
+    assert result["match"] == "none"

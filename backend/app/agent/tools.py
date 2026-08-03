@@ -9,9 +9,10 @@ Each returns a small, high-signal dict rather than raw rows -- the agent should
 be handed a conclusion it can reason about, not a table it has to summarize.
 """
 
+import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Invoice
@@ -133,4 +134,70 @@ async def get_invoice_history(
         "min_amount": _as_float(min_amount),
         "max_amount": _as_float(max_amount),
         "most_recent_date": most_recent.isoformat() if most_recent else None,
+    }
+
+
+async def check_duplicate_invoice(
+    session: AsyncSession,
+    vendor_id: str,
+    amount: float,
+    invoice_number: str | None = None,
+    exclude_invoice_id: uuid.UUID | None = None,
+) -> dict:
+    """Check whether this vendor has already been paid for this invoice.
+
+    Distinguishes `exact` from `near`, because the two demand different
+    actions: an exact re-submission is a confirmed duplicate and can be
+    rejected, while a near match is only suspicious and belongs in front of a
+    human. A single boolean would collapse that distinction and force the agent
+    to guess which it was looking at.
+
+    `exclude_invoice_id` keeps the invoice under review from matching itself.
+    It is bound by the caller rather than supplied by the model -- the agent has
+    no business naming which row to ignore, and forgetting it means every clean
+    invoice reports as a duplicate of itself.
+    """
+    resembles = [Invoice.amount == amount]
+    if invoice_number:
+        resembles.append(Invoice.invoice_number == invoice_number)
+
+    stmt = select(Invoice).where(
+        Invoice.vendor_id == vendor_id,
+        # "Already paid", not "already seen" -- a rejected invoice was never a
+        # payment, so it cannot be the thing this one duplicates.
+        Invoice.status == "approved",
+        or_(*resembles),
+    )
+    if exclude_invoice_id is not None:
+        stmt = stmt.where(Invoice.id != exclude_invoice_id)
+
+    candidates = (await session.execute(stmt)).scalars().all()
+
+    if not candidates:
+        return {"match": "none", "detail": "No prior payment to this vendor resembles it."}
+
+    def _is_exact(prior: Invoice) -> bool:
+        return (
+            invoice_number is not None
+            and prior.invoice_number == invoice_number
+            and float(prior.amount) == amount
+        )
+
+    prior = next((c for c in candidates if _is_exact(c)), None)
+    match = "exact" if prior is not None else "near"
+    if prior is None:
+        prior = candidates[0]
+
+    return {
+        "match": match,
+        "detail": (
+            "Identical invoice number and amount already paid."
+            if match == "exact"
+            else "A prior payment to this vendor closely resembles this invoice."
+        ),
+        "prior_invoice": {
+            "invoice_number": prior.invoice_number,
+            "amount": float(prior.amount) if prior.amount is not None else None,
+            "paid_on": prior.created_at.isoformat() if prior.created_at else None,
+        },
     }
