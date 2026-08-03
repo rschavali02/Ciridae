@@ -84,7 +84,20 @@ async def lookup_vendor(session: AsyncSession, vendor_name: str) -> dict:
         "vendor_id": str(best.id),
         "vendor_name": best.name,
         "bank_details": best.bank_details,
-        "similarity": round(best.sim, 2),
+        # The raw similarity score is deliberately withheld on a resolved match.
+        #
+        # It is calibrated against a measured distribution the agent has no
+        # access to: 0.42 is an unremarkable score for "Acme Inc" vs "ACME
+        # Incorporated", but on a 0-1 scale it reads as poor, and in the first
+        # live run the agent cited exactly that figure as its reason for cutting
+        # confidence to 0.82. A slightly shorter abbreviation would score lower
+        # still and could push a clean invoice under the escalation floor.
+        #
+        # Deciding whether the score clears the bar is this tool's job, already
+        # done. Passing the number along invites the agent to re-litigate a
+        # calibrated judgment with an uncalibrated one. Scores are still shown
+        # on the ambiguous branch, where they are used comparatively -- how
+        # close two candidates are -- rather than as an absolute quality signal.
     }
 
 

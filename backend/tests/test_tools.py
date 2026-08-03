@@ -68,6 +68,36 @@ async def test_flags_ambiguous_match(db_session):
 
 
 @pytest.mark.asyncio
+async def test_withholds_the_raw_similarity_score_on_a_resolved_match(db_session, seeded_vendor):
+    """The score is calibrated against a distribution the agent cannot see.
+
+    In the first live run the agent read 'similarity: 0.42' as evidence of a
+    weak match and cut its confidence to 0.82 because of it -- despite 0.42
+    being an unremarkable score for the Inc/Incorporated abbreviation. A
+    shorter variant would score lower and could push a clean invoice under the
+    escalation floor. Whether the score clears the bar is this tool's decision,
+    already made.
+    """
+    result = await lookup_vendor(db_session, vendor_name="Acme Inc")
+
+    assert result["match"] == "resolved"
+    assert "similarity" not in result
+
+
+@pytest.mark.asyncio
+async def test_keeps_similarity_on_ambiguous_candidates(db_session):
+    """Comparative use is legitimate: how close two candidates are to each
+    other is exactly what makes the match ambiguous."""
+    for name in ("Acme Industrial Supply", "Acme Industrial Services"):
+        db_session.add(Vendor(name=name, normalized_name=name.lower()))
+    await db_session.commit()
+
+    result = await lookup_vendor(db_session, vendor_name="Acme Industrial")
+
+    assert all("similarity" in c for c in result["candidates"])
+
+
+@pytest.mark.asyncio
 async def test_returns_bank_details_for_comparison(db_session, seeded_vendor):
     """The agent compares these against what the invoice prints -- policy IV
     requires escalating any discrepancy."""
