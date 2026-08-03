@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     anthropic_api_key: str
     database_url: str
     voyage_api_key: str
+    confidence_escalation_threshold: float = 0.7
 
 
 settings = Settings()
