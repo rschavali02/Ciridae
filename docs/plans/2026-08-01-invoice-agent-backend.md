@@ -3001,7 +3001,48 @@ git commit -m "feat: wire search_policy into the agent loop; record post-RAG eva
 
 ## What's next
 
-This plan stops at a working backend: extraction, a tool-using agent, an eval harness you can hit via `POST /eval/run`, and a measured before/after on what policy retrieval actually buys. The remaining pieces from `Project.MD` — `POST /invoices`, `GET /invoices`, approve/reject endpoints, and the React dashboard — get their own plan once you've run this one end-to-end and are happy with how the agent performs on the 12 cases.
+This plan stops at a working backend: extraction, a tool-using agent, an eval harness you can hit via `POST /eval/run`, and a measured before/after on what policy retrieval actually buys. The remaining pieces from `Project.MD` — `POST /invoices`, `GET /invoices`, approve/reject endpoints, and the React dashboard — get their own plan.
+
+### Outstanding backlog
+
+Ordering is not settled — this is the inventory, not the sequence.
+
+**Finish Phase 4 (eval baseline)**
+- Task 26 — LLM groundedness grader (`grade_groundedness` in `app/eval/graders.py`)
+- Task 27 Step 3 — de-confound the four approve cases (01, 04, 06, 11): each seeds no payment history and no invoice number, so `get_invoice_history` returns count 0 and the duplicate check is inconclusive. The agent escalates for those reasons rather than the one the case is named for, which would leave cases 6/7 and 2/3 unable to pair even after retrieval lands. Then run the baseline and read every transcript.
+- Task 28 — `POST /eval/run`
+
+**Phase 5 (policy RAG)** — Tasks 8b, 9, 10, 11, 12, 20, 29, unchanged.
+
+**Dev loop (not in any task above)**
+- Expand `fixtures/seed_vendors.py` beyond ACME and Globex. The 20 generated invoices name 20 distinct vendors, so 18 of 20 currently escalate on vendor-not-on-file and exercise nothing else. Seed most of them, plus purchase orders and some payment history — and deliberately leave two or three off the books so the unknown-payee path stays testable on purpose.
+- Parameterize `scripts/try_agent.py`: take the PDF path as an argument, derive the seeded vendor from the extracted name, and expose the scenario knobs that actually drive decisions (PO amount or none, prior history or none, duplicate present).
+
+**Product surface (needs its own plan)**
+- `POST /invoices` — evolve `/extract` rather than adding a second upload endpoint; persist the row and run the agent as a background task
+- `GET /invoices`, `GET /invoices/{id}` — fields, decision, confidence, retrieved context, full transcript
+- approve / reject endpoints writing to `audit_log`
+- React dashboard: pending list + detail view rendering the transcript
+
+### Vendor auto-onboarding — drafted, never auto-approved
+
+**The goal is to remove the data-entry toil without removing the control.** Vendor master file integrity is the primary fraud control in AP: the classic attack is a fabricated payee whose bank details are attacker-controlled, and on an unknown invoice the only available source for those details is the invoice itself. §III.A Step 1 of the corpus makes vendor setup a deliberate step that precedes delivery, so the agent may prepare that step but must not complete it.
+
+Behaviour:
+
+- When `lookup_vendor` returns no match, a vendor row is drafted from the extracted details with `status = 'pending_approval'`.
+- **The invoice still escalates.** Drafting a vendor never unlocks approval — not on this invoice, not on any invoice.
+- The frontend surfaces a flag for a human to review and approve the drafted vendor. The human verifies bank details out-of-band and activates the record.
+- `audit_log` records both the agent's draft and the human's activation, with the actor on each.
+
+Two constraints that are easy to get wrong:
+
+1. **A pending vendor must not resolve.** `lookup_vendor` matches `status = 'active'` only. If a drafted row counts as a match, the next invoice from that payee resolves cleanly and the control silently disappears — the fraud window just moves to invoice #2. A pending match returns a distinct third state (`drafted, awaiting approval`), not `resolved`.
+2. **Bank details carried over from the invoice are stored unverified.** They are the thing the human is checking; landing in a database row does not make them authoritative.
+
+Schema: `vendors` gains `status` (`pending_approval` | `active`) and `created_by` (`agent` | `human`). Existing seeded vendors are `active`.
+
+Eval impact: case 05 keeps expecting `escalate` — that is the assertion protecting this control, and it must not be relaxed. Two cases are worth adding: outcome verification that a `pending_approval` row was actually written, and a case proving a pending vendor does not resolve on a subsequent invoice.
 
 ## Out-of-band addition: stateless `POST /extract` + minimal frontend
 
