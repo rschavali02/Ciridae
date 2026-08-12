@@ -1,5 +1,12 @@
+import pytest
+
 from app.eval.cases import EvalCase, TrialResult
-from app.eval.graders import grade_committed, grade_outcome, grade_tool_calls
+from app.eval.graders import (
+    grade_committed,
+    grade_groundedness,
+    grade_outcome,
+    grade_tool_calls,
+)
 
 
 def case(expected_decision="approve", expected_tools=None):
@@ -126,3 +133,137 @@ def test_committed_catches_an_escalation_the_agent_never_chose():
 
     assert grade_outcome(case("escalate"), ran_out).passed  # outcome alone is fooled
     assert not grade_committed(case("escalate"), ran_out).passed  # this is not
+
+
+# --- grade_groundedness ----------------------------------------------------
+#
+# The only model-based grader in the suite, so the only one that can disagree
+# with itself between runs. These are integration tests: they call the judge for
+# real, because a mocked judge would test nothing but the mock.
+
+
+def reasoned(reasoning: str, tool_calls: list[dict]) -> TrialResult:
+    return TrialResult(
+        decision="approve",
+        confidence=0.9,
+        tools_called=[c["tool"] for c in tool_calls],
+        reasoning=reasoning,
+        tool_calls=tool_calls,
+    )
+
+
+VENDOR_LOOKUP = [
+    {
+        "tool": "lookup_vendor",
+        "input": {"vendor_name": "Acme Inc"},
+        "output": {"match": "resolved", "vendor_id": "abc", "vendor_name": "ACME Incorporated"},
+    }
+]
+
+PO_VARIANCE = [
+    {
+        "tool": "get_purchase_order",
+        "input": {"po_number": "PO-2"},
+        "output": {
+            "exists": True,
+            "po_amount": 6000.0,
+            "invoice_amount": 6400.0,
+            "variance_amount": 400.0,
+            "variance_percent": 6.67,
+        },
+    }
+]
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_groundedness_passes_reasoning_drawn_from_tool_output():
+    result = await grade_groundedness(
+        case(), reasoned("lookup_vendor resolved 'Acme Inc' to ACME Incorporated.", VENDOR_LOOKUP)
+    )
+    assert result.passed
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_groundedness_fails_a_fact_no_tool_returned():
+    result = await grade_groundedness(
+        case(),
+        reasoned(
+            "This vendor has been a customer for 15 years and always pays on time.",
+            VENDOR_LOOKUP,
+        ),
+    )
+    assert not result.passed
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_groundedness_fails_an_invented_policy_threshold():
+    """The failure this grader exists for.
+
+    No tool returns a tolerance. An agent that recalls "10 percent is standard"
+    from training can land on the right decision for cases 6-8 without ever
+    reading the policy -- and the outcome grader would score that as a pass,
+    making Phase 5 look unnecessary. Groundedness is what separates a decision
+    from a lucky guess.
+    """
+    result = await grade_groundedness(
+        case(),
+        reasoned(
+            "The variance is 6.67%, within the standard 10% tolerance, so I approved it.",
+            PO_VARIANCE,
+        ),
+    )
+    assert not result.passed
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_groundedness_allows_quoting_the_invoice_itself():
+    """The bug the first baseline run exposed.
+
+    The agent is handed the invoice in its opening prompt, so its printed text is
+    a legitimate source. A judge shown only the tool results marks every mention
+    of it as an unsupported claim -- it flagged case 12 for repeating the very
+    garbled scan text that case exists to test, and case 11 for quoting "EUR
+    4,500.00" off the document in front of it.
+    """
+    scanned = EvalCase(
+        name="x",
+        invoice={"amount": None, "raw_text": "???ACME??? invoi... $5??.00 ... due ??/??/2026"},
+        expected_decision="escalate",
+    )
+    result = await grade_groundedness(
+        scanned,
+        reasoned(
+            "The scan is illegible -- the vendor reads '???ACME???' and the total '$5??.00', "
+            "so no amount could be extracted. lookup_vendor found no matching vendor. "
+            "I cannot verify what is owed and am escalating.",
+            [
+                {
+                    "tool": "lookup_vendor",
+                    "input": {"vendor_name": "???ACME???"},
+                    "output": {"match": "none", "detail": "No vendor on file resembles it."},
+                }
+            ],
+        ),
+    )
+    assert result.passed, result.detail
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_groundedness_allows_declining_to_conclude():
+    """Refusing to assert an unavailable rule is the behaviour we want, not a
+    hallucination. Penalising it would train the suite against its own goal."""
+    result = await grade_groundedness(
+        case(),
+        reasoned(
+            "get_purchase_order reports a $400 variance, 6.67% over the PO. No tool "
+            "gave me a tolerance threshold, so I cannot judge whether that is "
+            "acceptable and am escalating.",
+            PO_VARIANCE,
+        ),
+    )
+    assert result.passed

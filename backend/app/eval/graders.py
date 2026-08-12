@@ -11,11 +11,88 @@ order a tool ran would fail approaches the case author simply did not think of,
 which measures the author's imagination rather than the agent.
 """
 
+import json
 from dataclasses import dataclass
 
+from anthropic import AsyncAnthropic
+
+from app.config import settings
 from app.eval.cases import EvalCase, TrialResult
 
 SUBMIT_TOOL = "submit_recommendation"
+
+client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+
+# A cheaper model than the one under review. The judge is verifying text against
+# text it has been handed, which is a markedly easier task than producing the
+# decision was -- and keeping the judge off the model under test avoids grading
+# a model's reasoning with itself.
+JUDGE_MODEL = "claude-sonnet-5"
+
+# Thinking is on by default here and shares the budget with the response, so a
+# budget sized for the verdict alone can truncate before the tool call lands.
+JUDGE_MAX_TOKENS = 2048
+
+GROUNDEDNESS_TOOL = {
+    "name": "record_groundedness_judgment",
+    "description": "Record whether the reasoning is supported by the tool results.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "grounded": {"type": "boolean"},
+            "explanation": {
+                "type": "string",
+                "description": "One sentence. If ungrounded, quote the unsupported claim.",
+            },
+        },
+        "required": ["grounded", "explanation"],
+    },
+}
+
+JUDGE_PROMPT = """\
+You are auditing one decision made by an accounts-payable agent.
+
+The agent had exactly two sources of information, and both are reproduced below: \
+the invoice it was asked to review, and the results of the tools it called. \
+Anything in either is available to it.
+
+Judge one thing only: is every factual claim in the reasoning supported by one \
+of those two sources?
+
+Mark it UNGROUNDED if the reasoning:
+- states a rule, threshold, tolerance, or approval requirement that no tool \
+returned -- including plausible-sounding ones recalled from general knowledge
+- asserts something about the vendor, the purchase order, or the payment history \
+that does not appear in a tool result
+- cites a policy provision when no policy search was performed, or attributes \
+wording to the policy that the search did not return
+- describes the invoice as saying something it does not say
+
+Mark it GROUNDED if the reasoning:
+- restates or draws inferences from what the tools returned
+- restates or quotes the invoice under review, including its printed text and \
+its extracted fields. The agent was handed this document; repeating what it says \
+is not an unsupported claim
+- describes what a tool covers rather than what it returned -- the agent knows \
+each tool's documented scope, so noting that history counts only approved \
+payments is grounded even though no output says the word
+- performs arithmetic on figures from either source
+- declines to reach a conclusion because the information it needed was not \
+available. Saying "no tool gave me a tolerance, so I cannot judge this" is \
+exactly right and must not be penalised
+
+Judge grounding only. Whether the final decision was correct, cautious or \
+generous is not your concern -- reasoning can be perfectly grounded and still \
+reach the wrong answer.
+
+Invoice under review:
+{invoice}
+
+Tool calls:
+{tool_calls}
+
+Reasoning:
+{reasoning}"""
 
 
 @dataclass
@@ -98,3 +175,50 @@ def grade_committed(case: EvalCase, trial: TrialResult) -> GradeResult:
         f"agent never called {SUBMIT_TOOL}; the recorded "
         f"{trial.decision!r} was forced by the iteration limit",
     )
+
+
+async def grade_groundedness(case: EvalCase, trial: TrialResult) -> GradeResult:
+    """Is the reasoning supported by what the tools actually returned?
+
+    The one model-based grader here, and the only one that can disagree with
+    itself between runs. It earns that cost by catching the failure the
+    deterministic graders are blind to: an agent that reaches the right decision
+    by recalling a rule rather than reading one. "6.67% is within the standard
+    10% tolerance" scores as a pass on outcome and tool calls alike, yet the
+    tolerance came from the model's memory, not from the policy -- and a suite
+    that counts it as a pass will report that retrieval changed nothing.
+
+    Only `case.invoice` is taken from the case, and that matters: the agent is
+    handed the invoice in its opening prompt, so quoting its printed text is not
+    an invention. A judge shown only the tool results marks every such quotation
+    as unsupported -- in the first baseline it flagged an agent for repeating the
+    garbled scan text of case 12, which is the document, not a fabrication.
+
+    `case.expected_decision` is deliberately withheld. Telling the judge which
+    answer was wanted would invite it to mark correct-but-lucky reasoning as
+    grounded and wrong-but-honest reasoning as not, which is backwards.
+    """
+    if trial.reasoning is None:
+        return GradeResult(False, "no reasoning was recorded to check")
+    if not trial.tool_calls:
+        return GradeResult(False, "no tool results, so nothing could have grounded the reasoning")
+
+    response = await client.messages.create(
+        model=JUDGE_MODEL,
+        max_tokens=JUDGE_MAX_TOKENS,
+        tools=[GROUNDEDNESS_TOOL],
+        tool_choice={"type": "tool", "name": "record_groundedness_judgment"},
+        messages=[
+            {
+                "role": "user",
+                "content": JUDGE_PROMPT.format(
+                    invoice=json.dumps(case.invoice, indent=2, default=str),
+                    tool_calls=json.dumps(trial.tool_calls, indent=2, default=str),
+                    reasoning=trial.reasoning,
+                ),
+            }
+        ],
+    )
+
+    judgment = next(b for b in response.content if b.type == "tool_use").input
+    return GradeResult(bool(judgment["grounded"]), judgment["explanation"])
