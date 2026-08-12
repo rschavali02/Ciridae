@@ -7,9 +7,12 @@ from app.agent.tools import (
     get_invoice_history,
     get_purchase_order,
     lookup_vendor,
+    search_policy_tool,
     submit_recommendation,
 )
 from app.models import Invoice, PurchaseOrder, Vendor
+from app.rag.chunking import PolicyChunk
+from app.rag.store import store_policy_chunks
 
 
 def _paid(vendor, amount, **kwargs):
@@ -403,3 +406,57 @@ def test_escalates_an_out_of_range_confidence():
     broken signal must not be read as clearing the threshold."""
     result = submit_recommendation(decision="approve", confidence=1.4, reasoning="Certain.")
     assert result["final_decision"] == "escalate"
+
+
+# --- search_policy_tool ----------------------------------------------------
+
+
+POLICY = [
+    PolicyChunk(
+        section="II. Policy",
+        text=(
+            "Discrepancies between the vendor invoice and the purchase order greater than "
+            "10 percent or $1,000 USD or equivalent in local currency (the lesser of the "
+            "two) must be resolved before the payment can be processed."
+        ),
+    ),
+    PolicyChunk(
+        section="F. Currency of payments",
+        text=(
+            "With the exception of headquarters locations, goods and services should be "
+            "paid for in the local currency of the business unit."
+        ),
+    ),
+]
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_returns_clauses_with_the_section_they_came_from(db_session):
+    """The section is what makes a retrieved rule citable. Returning bare text
+    would leave the agent unable to say which provision it relied on, and the
+    groundedness grader unable to check that it relied on one at all."""
+    await store_policy_chunks(db_session, POLICY)
+
+    result = await search_policy_tool(
+        db_session, query="how much can an invoice differ from its purchase order"
+    )
+
+    assert any("10 percent" in c["text"] for c in result["clauses"])
+    assert any(c["section"] == "II. Policy" for c in result["clauses"])
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_says_so_when_the_corpus_is_empty(db_session):
+    """An unloaded corpus is a misconfiguration, not an answer.
+
+    pgvector always returns the nearest rows, so an empty result can only mean
+    no rows exist. Returning a bare empty list would let an eval run complete
+    while measuring a tool that never worked -- the transcript should say
+    plainly that nothing was searched.
+    """
+    result = await search_policy_tool(db_session, query="anything at all")
+
+    assert result["clauses"] == []
+    assert "detail" in result

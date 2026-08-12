@@ -17,6 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models import Invoice, PurchaseOrder
+from app.rag.search import DEFAULT_TOP_K as POLICY_TOP_K
+from app.rag.search import search_policy as rag_search_policy
 
 VALID_DECISIONS = ("approve", "reject", "escalate")
 
@@ -305,4 +307,41 @@ def submit_recommendation(decision: str, confidence: float, reasoning: str) -> d
         "override_reason": "; ".join(reasons) if overridden else None,
         "confidence": confidence,
         "reasoning": reasoning,
+    }
+
+
+async def search_policy_tool(session: AsyncSession, query: str) -> dict:
+    """Search the written AP policy for the clauses governing this invoice.
+
+    Named `_tool` because `app.rag.search.search_policy` is the retrieval
+    function it wraps; the agent-facing name stays `search_policy`, bound in
+    `build_tools`.
+
+    Each clause carries the section it came from, not just its text. That is
+    what lets the agent cite "per §II" rather than paraphrasing an unattributed
+    rule, and what lets the groundedness grader check the citation against what
+    was actually returned. A bare wall of text would make both impossible.
+
+    Similarity scores are deliberately not returned, for the same reason
+    `lookup_vendor` withholds them: they are calibrated against a distribution
+    the agent cannot see, and inviting it to weigh a rule by its distance score
+    replaces a retrieved fact with an uncalibrated judgement.
+    """
+    documents = await rag_search_policy(session, query=query, top_k=POLICY_TOP_K)
+
+    if not documents:
+        # pgvector always returns the nearest rows, so nothing coming back means
+        # the table is empty -- the corpus was never loaded. Saying so keeps a
+        # misconfigured eval run from looking like a policy that simply had no
+        # answer, which would be scored as the agent's failure rather than ours.
+        return {
+            "clauses": [],
+            "detail": (
+                "The policy corpus is empty -- nothing has been indexed to search. "
+                "Treat this as a missing tool, not as the policy being silent."
+            ),
+        }
+
+    return {
+        "clauses": [{"section": d.section, "text": d.chunk_text} for d in documents],
     }
