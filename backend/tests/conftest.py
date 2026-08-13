@@ -1,9 +1,12 @@
 import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.config import settings
+from app.db import get_session
+from app.main import app
 from app.models import Invoice, PurchaseOrder, Vendor
 
 # A dedicated test engine with pooling disabled.
@@ -65,6 +68,35 @@ async def db_session():
         await session.close()
         await transaction.rollback()
         await connection.close()
+
+
+@pytest_asyncio.fixture
+async def client(db_session):
+    """An HTTP client for the app, sharing the test's rolled-back session.
+
+    Driven in-process on the test's own event loop rather than through
+    `TestClient`, which runs the app from a second thread with a second loop: the
+    session below is bound to an asyncpg connection owned by *this* loop, and
+    handing that connection to another one fails the same way pooling does --
+    see the note on `test_engine`.
+
+    Overriding `get_session` is what keeps the endpoints' commits inside the
+    outer transaction. A handler opening its own `SessionLocal` would write rows
+    the rollback cannot reach, and every run would leave invoices behind in the
+    development database.
+    """
+
+    async def override_get_session():
+        yield db_session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as http_client:
+            yield http_client
+    finally:
+        app.dependency_overrides.clear()
 
 
 @pytest_asyncio.fixture

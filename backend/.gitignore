@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 .pytest_cache/
 venv/
+# Uploaded invoices. Runtime documents, not fixtures -- they only share a
+# directory tree with the checked-in sample PDFs.
+fixtures/uploads/
