@@ -57,3 +57,18 @@ pre {
   padding: 0.75rem;
   border-radius: 6px;
 }
+
+.timeline {
+  list-style: none;
+  padding: 0;
+  margin: 0.75rem 0;
+}
+
+.timeline li {
+  border-bottom: 1px solid #ddd;
+  padding: 0.4rem 0;
+}
+
+.timeline summary {
+  cursor: pointer;
+}
