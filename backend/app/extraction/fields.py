@@ -16,6 +16,7 @@ class ExtractedFields(BaseModel):
     vendor_name: str | None = None
     invoice_number: str | None = None
     amount: float | None = None
+    currency: str | None = None  # ISO 4217, null when the invoice does not say
     due_date: str | None = None  # ISO 8601, agent/caller parses to date
     po_number: str | None = None
     line_items: list[LineItemFields] = []
@@ -30,6 +31,13 @@ EXTRACT_TOOL = {
             "vendor_name": {"type": ["string", "null"]},
             "invoice_number": {"type": ["string", "null"]},
             "amount": {"type": ["number", "null"]},
+            "currency": {
+                "type": ["string", "null"],
+                "description": (
+                    "ISO 4217 code, e.g. USD or EUR. Null if the invoice does not "
+                    "state one -- do not infer a default."
+                ),
+            },
             "due_date": {"type": ["string", "null"], "description": "ISO 8601 date"},
             "po_number": {"type": ["string", "null"]},
             "line_items": {
