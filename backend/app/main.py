@@ -402,3 +402,39 @@ async def reject_invoice(
     """Refuse an invoice. Terminal in the same sense `approved` is -- it records
     the decision; nothing downstream acts on it."""
     return await record_human_decision(session, invoice_id, "rejected", "reject")
+
+
+@app.get("/vendors/pending")
+async def list_pending_vendors(session: AsyncSession = Depends(get_session)):
+    """Drafted payees waiting on a person to check them out of band.
+
+    Only the pending ones: an active vendor is already payable and has nothing
+    left here for a human to act on.
+    """
+    vendors = (
+        await session.execute(
+            select(Vendor)
+            .where(Vendor.approval_status == "pending_approval")
+            .order_by(Vendor.name)
+        )
+    ).scalars().all()
+
+    return [
+        {"id": str(vendor.id), "name": vendor.name, "bank_details": vendor.bank_details}
+        for vendor in vendors
+    ]
+
+
+@app.post("/vendors/{vendor_id}/approve")
+async def approve_vendor(vendor_id: uuid.UUID, session: AsyncSession = Depends(get_session)):
+    """Make a drafted payee payable. Nothing else does -- see `lookup_vendor`,
+    which only resolves `active` vendors."""
+    vendor = await session.get(Vendor, vendor_id)
+    if vendor is None:
+        raise HTTPException(status_code=404, detail=f"No vendor {vendor_id}")
+
+    vendor.approval_status = "active"
+    await session.commit()
+    await session.refresh(vendor)
+
+    return {"id": str(vendor.id), "name": vendor.name, "approval_status": vendor.approval_status}
