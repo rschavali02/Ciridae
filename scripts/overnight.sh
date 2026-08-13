@@ -41,8 +41,12 @@ REVIEW_TASKS=(4 5 7 8)
 # Claude Code usage limits reset on a rolling window, so being throttled is a
 # wait, not a failure. Sleeping through it costs nothing overnight; giving up
 # strands the run at whatever task was in flight.
-CLAUDE_MAX_ATTEMPTS=10
-RATE_LIMIT_WAIT=1200 # 20 minutes
+# A session limit can reset several hours out -- the first run hit one at 22:03
+# that reset at 01:50, nearly four hours later. Ten attempts at twenty minutes
+# would have given up at 3h20m and still lost the night, so the ceiling is set
+# past any plausible window.
+CLAUDE_MAX_ATTEMPTS=18
+RATE_LIMIT_WAIT=1200 # 20 minutes -> up to 6h of waiting
 
 mkdir -p "$LOGS"
 cd "$REPO" || exit 1
@@ -66,8 +70,14 @@ run_claude() {
     # requests-per-minute cap, so an agent that merely quotes that text on a
     # successful run would otherwise trigger a 20-minute sleep and a pointless
     # retry of work that already landed.
+    #
+    # The pattern list is deliberately broad because getting it wrong is silent
+    # and expensive: the first overnight run died at task 8 on "You've hit your
+    # session limit · resets 1:50am", which matched none of the phrasings this
+    # originally looked for. It stopped instead of sleeping four hours and
+    # carrying on, and the night was lost.
     if ((status == 0)) ||
-      ! grep -qiE "rate limit|usage limit|too many requests|limit reached|limit will reset" "$log"; then
+      ! grep -qiE "session limit|rate limit|usage limit|too many requests|limit reached|limit exceeded|hit your .*limit|limit will reset|resets? [0-9]" "$log"; then
       return $status
     fi
 
@@ -100,7 +110,28 @@ if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
   exit 1
 fi
 
-say "starting at $(git rev-parse --short HEAD)"
+# Resume support: `./scripts/overnight.sh 8` skips everything before task 8.
+# A stopped run leaves completed tasks committed, so restarting from the top
+# would re-run work that already landed and let a second agent form its own
+# opinion about code that was already reviewed.
+START_AT="${1:-}"
+reached=0
+[[ -z "$START_AT" ]] && reached=1
+
+should_run() {
+  local task="$1"
+  if ((reached == 0)); then
+    if [[ "$task" == "$START_AT" ]]; then
+      reached=1
+    else
+      say "skipping task $task (before resume point $START_AT)"
+      return 1
+    fi
+  fi
+  return 0
+}
+
+say "starting at $(git rev-parse --short HEAD)${START_AT:+ (resuming from task $START_AT)}"
 
 run_task() {
   local task="$1" gate="$2"
@@ -186,6 +217,7 @@ frontend_gate() {
 }
 
 for task in "${BACKEND_TASKS[@]}"; do
+  should_run "$task" || continue
   run_task "$task" pytest_gate || exit 1
   for risky in "${REVIEW_TASKS[@]}"; do
     [[ "$task" == "$risky" ]] && review_task "$task"
@@ -211,6 +243,7 @@ Write your findings and nothing else to $LOGS/review-phase-ab.md. Do not fix any
 say "phase A+B: integration review written to $LOGS/review-phase-ab.md"
 
 for task in "${FRONTEND_TASKS[@]}"; do
+  should_run "$task" || continue
   run_task "$task" frontend_gate || exit 1
 done
 
