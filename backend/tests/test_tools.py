@@ -354,6 +354,35 @@ async def test_surfaces_the_lesser_of_the_two_case(db_session):
     assert result["variance_percent"] == pytest.approx(4.0)
 
 
+@pytest.mark.asyncio
+async def test_reports_both_currencies(db_session):
+    db_session.add(PurchaseOrder(po_number="PO-9", amount=4500.0, currency="EUR"))
+    await db_session.commit()
+
+    result = await get_purchase_order(
+        db_session, po_number="PO-9", invoice_amount=4500.0, invoice_currency="EUR"
+    )
+
+    assert result["currency_match"] is True
+    assert result["po_currency"] == "EUR"
+
+
+@pytest.mark.asyncio
+async def test_withholds_variance_across_currencies(db_session):
+    """A 0.0% variance between 4,500 EUR and 4,500 USD is not a match, it is a
+    unit error. Reporting it as a match is what let case 11 look approvable."""
+    db_session.add(PurchaseOrder(po_number="PO-9", amount=4500.0, currency="USD"))
+    await db_session.commit()
+
+    result = await get_purchase_order(
+        db_session, po_number="PO-9", invoice_amount=4500.0, invoice_currency="EUR"
+    )
+
+    assert result["currency_match"] is False
+    assert "variance_percent" not in result
+    assert "differ" in result["detail"].lower()
+
+
 # --- submit_recommendation -------------------------------------------------
 #
 # Threshold is 0.7 (CONFIDENCE_ESCALATION_THRESHOLD), so 0.9 is confident and

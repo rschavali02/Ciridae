@@ -222,7 +222,10 @@ async def check_duplicate_invoice(
 
 
 async def get_purchase_order(
-    session: AsyncSession, po_number: str, invoice_amount: float | None = None
+    session: AsyncSession,
+    po_number: str,
+    invoice_amount: float | None = None,
+    invoice_currency: str | None = None,
 ) -> dict:
     """Look up a purchase order and measure how far the invoice diverges from it.
 
@@ -251,7 +254,31 @@ async def get_purchase_order(
         }
 
     po_amount = float(po.amount)
-    result = {"exists": True, "po_number": po.po_number, "po_amount": po_amount}
+    result = {
+        "exists": True,
+        "po_number": po.po_number,
+        "po_amount": po_amount,
+        "po_currency": po.currency,
+        "invoice_currency": invoice_currency,
+    }
+
+    # None, not False, when either side is unrecorded: "we know they differ" and
+    # "we cannot tell" are different findings, and collapsing the second into
+    # the first would hold every invoice predating the currency column.
+    currencies_known = po.currency is not None and invoice_currency is not None
+    result["currency_match"] = (
+        po.currency == invoice_currency if currencies_known else None
+    )
+
+    if currencies_known and po.currency != invoice_currency:
+        # Deliberately no variance. Subtracting figures in different units
+        # produces a number that looks authoritative and means nothing.
+        result["detail"] = (
+            f"Invoice is in {invoice_currency} and the purchase order in "
+            f"{po.currency}; the amounts differ in unit and cannot be compared. "
+            "No exchange rate is available to this tool."
+        )
+        return result
 
     if invoice_amount is not None:
         variance = invoice_amount - po_amount

@@ -109,13 +109,15 @@ def build_tools(session: AsyncSession, transcript: RunTranscript, invoice: Invoi
         Args:
             po_number: The purchase order number referenced on the invoice.
         """
-        # invoice_amount is bound rather than asked for: it is already known
-        # authoritatively, and having the model restate it invites a
-        # transcription slip that would corrupt the variance figure silently.
+        # invoice_amount and invoice_currency are bound rather than asked for:
+        # both are already known authoritatively, and having the model restate
+        # them invites a transcription slip that would corrupt the variance
+        # figure -- or the currency comparison -- silently.
         out = await tool_impls.get_purchase_order(
             session,
             po_number=po_number,
             invoice_amount=float(invoice.amount) if invoice.amount is not None else None,
+            invoice_currency=invoice.currency,
         )
         transcript.record_tool_call("get_purchase_order", {"po_number": po_number}, out)
         return json.dumps(out)
