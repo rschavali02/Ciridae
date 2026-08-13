@@ -16,7 +16,7 @@ from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models import Invoice, PurchaseOrder
+from app.models import Invoice, PurchaseOrder, Vendor
 from app.rag.search import DEFAULT_TOP_K as POLICY_TOP_K
 from app.rag.search import search_policy as rag_search_policy
 
@@ -130,6 +130,59 @@ async def lookup_vendor(session: AsyncSession, vendor_name: str) -> dict:
         # calibrated judgment with an uncalibrated one. Scores are still shown
         # on the ambiguous branch, where they are used comparatively -- how
         # close two candidates are -- rather than as an absolute quality signal.
+    }
+
+
+async def draft_vendor(
+    session: AsyncSession, vendor_name: str, bank_details: str | None = None
+) -> dict:
+    """Queue an unknown payee for human approval. Does not make it payable.
+
+    The agent prepares the record; a person completes it. Vendor master file
+    integrity is the primary fraud control in accounts payable, and on an
+    unknown invoice the only available source for bank details is the invoice
+    itself -- which is the document an attacker controls. So the details below
+    are stored unverified and the vendor stays unpayable until a human has
+    checked them out of band.
+    """
+    normalized = vendor_name.strip().lower()
+
+    # Exact normalized-name match, not the trigram similarity `lookup_vendor`
+    # uses. This runs after that tool has already reported no match, and its job
+    # is only to keep repeat invoices from the same payee from queuing the same
+    # row three times.
+    existing = (
+        await session.execute(select(Vendor).where(Vendor.normalized_name == normalized))
+    ).scalar_one_or_none()
+    if existing is not None:
+        return {
+            "status": existing.approval_status,
+            "payable": existing.approval_status == "active",
+            "detail": (
+                f"{vendor_name!r} is already on file with status "
+                f"{existing.approval_status!r}."
+            ),
+        }
+
+    session.add(
+        Vendor(
+            name=vendor_name.strip(),
+            normalized_name=normalized,
+            bank_details=bank_details,
+            approval_status="pending_approval",
+            created_by="agent",
+        )
+    )
+    await session.commit()
+
+    return {
+        "status": "pending_approval",
+        "payable": False,
+        "detail": (
+            f"{vendor_name!r} has been queued for human approval. Drafting a vendor "
+            "does not authorise payment -- this invoice still requires review, and "
+            "any bank details taken from the invoice are unverified."
+        ),
     }
 
 

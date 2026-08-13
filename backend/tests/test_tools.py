@@ -1,9 +1,11 @@
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from sqlalchemy import select
 
 from app.agent.tools import (
     check_duplicate_invoice,
+    draft_vendor,
     get_invoice_history,
     get_purchase_order,
     lookup_vendor,
@@ -134,6 +136,47 @@ async def test_a_drafted_vendor_does_not_resolve(db_session):
 
     assert result["match"] == "drafted"
     assert "awaiting approval" in result["detail"].lower()
+
+
+# --- draft_vendor ----------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_draft_vendor_creates_a_pending_row(db_session):
+    result = await draft_vendor(
+        db_session,
+        vendor_name="Nonesuch Trading LLC",
+        bank_details="IBAN GB00NONE00000000000009",
+    )
+
+    assert result["status"] == "pending_approval"
+    row = (
+        await db_session.execute(select(Vendor).where(Vendor.name == "Nonesuch Trading LLC"))
+    ).scalar_one()
+    assert row.approval_status == "pending_approval"
+    assert row.created_by == "agent"
+
+
+@pytest.mark.asyncio
+async def test_draft_vendor_says_it_does_not_authorise_payment(db_session):
+    """The tool result is the agent's only signal about what drafting bought it.
+    If it reads as success the agent may treat the payee as resolved."""
+    result = await draft_vendor(db_session, vendor_name="Nonesuch Trading LLC")
+    assert "not" in result["detail"].lower()
+    assert result["payable"] is False
+
+
+@pytest.mark.asyncio
+async def test_draft_vendor_is_idempotent(db_session):
+    """Three invoices from the same unknown payee should queue one vendor for a
+    human, not three."""
+    await draft_vendor(db_session, vendor_name="Nonesuch Trading LLC")
+    await draft_vendor(db_session, vendor_name="Nonesuch Trading LLC")
+
+    rows = (
+        await db_session.execute(select(Vendor).where(Vendor.approval_status == "pending_approval"))
+    ).scalars().all()
+    assert len(rows) == 1
 
 
 # --- get_invoice_history ---------------------------------------------------
