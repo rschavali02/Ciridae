@@ -9,7 +9,7 @@ import pytest_asyncio
 from sqlalchemy import select
 
 import app.main as main
-from app.models import AgentRun, Invoice
+from app.models import AgentRun, AuditLog, Invoice
 
 CLEAN_ACME = "fixtures/invoices/clean_acme.pdf"
 
@@ -385,3 +385,108 @@ async def test_activity_for_an_unknown_invoice_is_a_404(client):
     response = await client.get(f"/invoices/{uuid.uuid4()}/activity")
 
     assert response.status_code == 404
+
+
+@pytest_asyncio.fixture
+async def escalated_invoice(db_session, decided_invoice):
+    """A reviewed invoice that the agent held for a person to settle.
+
+    Built on `decided_invoice` rather than replacing it: the run there already
+    escalates, and `escalated` is the invoice-side state that decision leaves
+    behind -- the queue's "needs you" side, and the only state from which a human
+    approval is a real change rather than a no-op.
+    """
+    decided_invoice.status = "escalated"
+    await db_session.commit()
+    await db_session.refresh(decided_invoice)
+    return decided_invoice
+
+
+@pytest.mark.asyncio
+async def test_approve_sets_status_and_writes_an_audit_row(
+    client, escalated_invoice, db_session
+):
+    response = await client.post(f"/invoices/{escalated_invoice.id}/approve")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "approved"
+
+    await db_session.refresh(escalated_invoice)
+    assert escalated_invoice.status == "approved"
+
+    row = (await db_session.execute(select(AuditLog))).scalar_one()
+    assert row.invoice_id == escalated_invoice.id
+    assert row.action == "approve"
+
+
+@pytest.mark.asyncio
+async def test_audit_row_records_before_and_after(client, escalated_invoice, db_session):
+    """The audit log is the answer to 'who approved this and what did it look like
+    when they did'. Recording only the new state cannot answer the second half."""
+    await client.post(f"/invoices/{escalated_invoice.id}/approve")
+
+    row = (await db_session.execute(select(AuditLog))).scalar_one()
+    assert row.actor == "human"
+    assert row.before_state["status"] == "escalated"
+    assert row.after_state["status"] == "approved"
+
+
+@pytest.mark.asyncio
+async def test_the_audit_row_keeps_what_the_agent_recommended(
+    client, escalated_invoice, db_session
+):
+    """A human approval is only legible against what it overrode. Without the
+    agent's own call on the row, the log records that someone approved an invoice
+    but not that they approved one the agent had held."""
+    await client.post(f"/invoices/{escalated_invoice.id}/approve")
+
+    row = (await db_session.execute(select(AuditLog))).scalar_one()
+    assert row.before_state["decision"] == "escalate"
+    assert row.before_state["confidence"] == 0.55
+    assert row.before_state["amount"] == 18400.00
+
+
+@pytest.mark.asyncio
+async def test_reject_sets_status_and_writes_an_audit_row(
+    client, escalated_invoice, db_session
+):
+    response = await client.post(f"/invoices/{escalated_invoice.id}/reject")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "rejected"
+
+    await db_session.refresh(escalated_invoice)
+    assert escalated_invoice.status == "rejected"
+
+    row = (await db_session.execute(select(AuditLog))).scalar_one()
+    assert row.actor == "human"
+    assert row.action == "reject"
+    assert row.before_state["status"] == "escalated"
+    assert row.after_state["status"] == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_a_human_decision_shows_up_in_the_queue(client, escalated_invoice):
+    """The point of approving is that the invoice leaves the pile that needs
+    attention. If the queue still reads `escalated`, nothing has happened as far
+    as the person using it can tell."""
+    await client.post(f"/invoices/{escalated_invoice.id}/approve")
+
+    row = (await client.get("/invoices")).json()[0]
+
+    assert row["status"] == "approved"
+    # The agent's own call is untouched: a human settling an invoice does not
+    # rewrite the review, and the detail view still shows what was overridden.
+    assert row["decision"] == "escalate"
+
+
+@pytest.mark.asyncio
+async def test_deciding_an_unknown_invoice_is_a_404(client, db_session):
+    """404 rather than a silently-created audit row: `audit_log.invoice_id` is a
+    foreign key, so a decision on an id that does not exist has nowhere to be
+    recorded and must not look like it succeeded."""
+    for action in ("approve", "reject"):
+        response = await client.post(f"/invoices/{uuid.uuid4()}/{action}")
+        assert response.status_code == 404
+
+    assert (await db_session.execute(select(AuditLog))).scalars().all() == []

@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agent.runner import run_agent
 from app.db import SessionLocal, get_session
 from app.extraction.pipeline import extract_invoice
-from app.models import AgentRun, Invoice, LineItem, Vendor
+from app.models import AgentRun, AuditLog, Invoice, LineItem, Vendor
 
 app = FastAPI(title="Invoice Agent")
 
@@ -318,3 +318,87 @@ async def get_activity(invoice_id: uuid.UUID, session: AsyncSession = Depends(ge
         "call_count": len(tool_calls),
         "decision": run.decision if run else None,
     }
+
+
+def audit_state(invoice: Invoice, run: AgentRun | None) -> dict:
+    """What the invoice looked like at one moment, for the audit log.
+
+    Carries the agent's own call alongside the invoice's status because a human
+    decision only means something against what it settled or overrode: "approved"
+    on its own does not record that someone released an invoice the agent had
+    held at 0.55 confidence. The amount travels with it so the row still says
+    what was cleared if the invoice is later corrected.
+
+    Both `before_state` and `after_state` are written in this shape so the two
+    can be read as a diff rather than as two differently-shaped snapshots.
+    """
+    return {
+        "status": invoice.status,
+        "amount": float(invoice.amount) if invoice.amount is not None else None,
+        "currency": invoice.currency,
+        "decision": run.decision if run else None,
+        "confidence": run.confidence if run else None,
+    }
+
+
+async def record_human_decision(
+    session: AsyncSession, invoice_id: uuid.UUID, status: str, action: str
+) -> dict:
+    """Settle an invoice on a person's authority, and record that they did.
+
+    The status change and the audit row are written in one commit: an approved
+    invoice with no record of who approved it is precisely the state the log
+    exists to make impossible.
+
+    The agent's run is left exactly as it was. A human decision is a separate
+    event from the review that preceded it -- overwriting the recommendation
+    would erase the disagreement, which is the part worth keeping.
+    """
+    invoice = await session.get(Invoice, invoice_id)
+    if invoice is None:
+        raise HTTPException(status_code=404, detail=f"No invoice {invoice_id}")
+
+    run = (await latest_runs(session, [invoice.id])).get(invoice.id)
+    before = audit_state(invoice, run)
+
+    invoice.status = status
+    session.add(
+        AuditLog(
+            invoice_id=invoice.id,
+            # The endpoint is only reachable by a person; the agent never calls
+            # it. `submit_recommendation` is where the agent's decisions land.
+            actor="human",
+            action=action,
+            before_state=before,
+            after_state=audit_state(invoice, run),
+        )
+    )
+    await session.commit()
+    await session.refresh(invoice)
+
+    vendor = await session.get(Vendor, invoice.vendor_id) if invoice.vendor_id else None
+    return summarize(invoice, vendor, run)
+
+
+@app.post("/invoices/{invoice_id}/approve")
+async def approve_invoice(
+    invoice_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+):
+    """Clear an invoice for payment.
+
+    Deliberately not guarded on the current status. The reviewer is the authority
+    here, and an invoice the agent approved can still need a person to confirm
+    it; refusing the second approval would only mean the queue and the log
+    disagree about what happened. Every call writes its own audit row, so a
+    changed mind reads as two decisions rather than as one silently rewritten.
+    """
+    return await record_human_decision(session, invoice_id, "approved", "approve")
+
+
+@app.post("/invoices/{invoice_id}/reject")
+async def reject_invoice(
+    invoice_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+):
+    """Refuse an invoice. Terminal in the same sense `approved` is -- it records
+    the decision; nothing downstream acts on it."""
+    return await record_human_decision(session, invoice_id, "rejected", "reject")
