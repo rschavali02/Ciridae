@@ -10,14 +10,19 @@ def _tools(session, invoice):
 
 
 @pytest.mark.asyncio
-async def test_exposes_the_five_structured_tools(db_session, seeded_invoice):
-    """search_policy is deliberately absent -- Phase 4 measures the agent
-    without policy access, and adding it early would erase the baseline."""
+async def test_exposes_the_six_tools(db_session, seeded_invoice):
+    """search_policy joined the set in Phase 5, once the baseline was recorded.
+
+    It was absent through Phase 4 on purpose: the comparison only means
+    something if policy access is the single thing that changed between the two
+    runs.
+    """
     assert set(_tools(db_session, seeded_invoice)) == {
         "lookup_vendor",
         "get_invoice_history",
         "check_duplicate_invoice",
         "get_purchase_order",
+        "search_policy",
         "submit_recommendation",
     }
 

@@ -146,12 +146,33 @@ def build_tools(session: AsyncSession, transcript: RunTranscript, invoice: Invoi
         )
         return json.dumps(out)
 
+    @beta_async_tool
+    async def search_policy(query: str) -> str:
+        """Search the written AP policy for the clauses governing this invoice.
+
+        Consult the policy before approving anything whose amount, currency,
+        missing purchase order, or unfamiliar payee might be governed by a
+        written rule. A check the tools cannot perform is not the same as a
+        check that passed.
+
+        Thresholds, tolerance bands and required controls live in this document,
+        not in your training -- call this rather than asserting a rule from
+        memory. Clauses come back with their section headings so you can cite
+        the provision you relied on.
+
+        Args:
+            query: What you need the policy to tell you, in plain language.
+        """
+        out = await tool_impls.search_policy_tool(session, query=query)
+        transcript.record_tool_call("search_policy", {"query": query}, out)
+        return json.dumps(out)
+
     return [
         lookup_vendor,
         get_invoice_history,
         check_duplicate_invoice,
         get_purchase_order,
-        # PHASE 5 appends search_policy here. Leave it out for the baseline.
+        search_policy,
         submit_recommendation,
     ]
 
