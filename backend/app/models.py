@@ -41,6 +41,10 @@ class PurchaseOrder(Base):
     id: Mapped[uuid.UUID] = uuid_pk()
     po_number: Mapped[str] = mapped_column(String, nullable=False, unique=True)
     amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
+    # ISO 4217. Bare amounts cannot be compared across currencies -- a EUR
+    # invoice against a currency-less PO reports a meaningless 0.0% variance,
+    # which is what eval case 11 exists to catch.
+    currency: Mapped[str] = mapped_column(String(3), nullable=True)
 
 
 class Vendor(Base):
@@ -49,6 +53,12 @@ class Vendor(Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
     normalized_name: Mapped[str] = mapped_column(String, nullable=False)
     bank_details: Mapped[str] = mapped_column(String, nullable=True)
+    # 'pending_approval' | 'active'. A drafted vendor must never resolve in
+    # lookup_vendor, or the next invoice from that payee matches cleanly and the
+    # control disappears rather than holding.
+    status: Mapped[str] = mapped_column(String, nullable=False, server_default="active")
+    # 'agent' | 'human'
+    created_by: Mapped[str] = mapped_column(String, nullable=False, server_default="human")
 
 
 class Invoice(Base):
@@ -57,6 +67,10 @@ class Invoice(Base):
     vendor_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("vendors.id"), nullable=True)
     invoice_number: Mapped[str] = mapped_column(String, nullable=True)
     amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=True)
+    # ISO 4217. Bare amounts cannot be compared across currencies -- a EUR
+    # invoice against a currency-less PO reports a meaningless 0.0% variance,
+    # which is what eval case 11 exists to catch.
+    currency: Mapped[str] = mapped_column(String(3), nullable=True)
     due_date: Mapped[date] = mapped_column(Date, nullable=True)
     po_number: Mapped[str] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
