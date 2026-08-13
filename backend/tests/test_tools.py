@@ -560,3 +560,75 @@ async def test_says_so_when_the_corpus_is_empty(db_session):
 
     assert result["clauses"] == []
     assert "detail" in result
+
+
+@pytest.mark.asyncio
+async def test_drafted_match_names_the_draft_not_the_invoice(db_session):
+    """The similarity threshold is loose, so the two spellings can differ. The
+    agent must be told which draft it matched, or the transcript a human reads
+    carries a name that was never drafted."""
+    db_session.add(
+        Vendor(
+            name="Nonesuch Trading LLC",
+            normalized_name="nonesuch trading llc",
+            approval_status="pending_approval",
+            created_by="agent",
+        )
+    )
+    await db_session.commit()
+
+    result = await lookup_vendor(db_session, vendor_name="Nonesuch Trading Ltd")
+
+    assert result["match"] == "drafted"
+    assert result["drafted_name"] == "Nonesuch Trading LLC"
+    assert "Nonesuch Trading LLC" in result["detail"]
+
+
+@pytest.mark.asyncio
+async def test_redraft_surfaces_conflicting_bank_details(db_session):
+    """Two invoices from one payee naming different accounts is the canonical
+    vendor-fraud tell. An early return that ignores the second set is the one
+    path where it reaches neither the agent nor the approving human."""
+    await draft_vendor(
+        db_session, vendor_name="Nonesuch Trading LLC", bank_details="IBAN GB00NONE009"
+    )
+
+    result = await draft_vendor(
+        db_session, vendor_name="Nonesuch Trading LLC", bank_details="IBAN DE00OTHER123"
+    )
+
+    assert result["bank_details_differ"] is True
+    assert "IBAN DE00OTHER123" in result["detail"]
+    assert result["payable"] is False
+
+
+@pytest.mark.asyncio
+async def test_redraft_with_matching_bank_details_is_not_a_finding(db_session):
+    await draft_vendor(
+        db_session, vendor_name="Nonesuch Trading LLC", bank_details="IBAN GB00NONE009"
+    )
+
+    result = await draft_vendor(
+        db_session, vendor_name="Nonesuch Trading LLC", bank_details="IBAN GB00NONE009"
+    )
+
+    assert result["bank_details_differ"] is False
+
+
+@pytest.mark.asyncio
+async def test_conflicting_details_do_not_overwrite_what_is_on_file(db_session):
+    """The first submission is no more trustworthy than the second. Replacing
+    the stored value would destroy the discrepancy instead of surfacing it."""
+    await draft_vendor(
+        db_session, vendor_name="Nonesuch Trading LLC", bank_details="IBAN GB00NONE009"
+    )
+    await draft_vendor(
+        db_session, vendor_name="Nonesuch Trading LLC", bank_details="IBAN DE00OTHER123"
+    )
+
+    row = (
+        await db_session.execute(
+            select(Vendor).where(Vendor.normalized_name == "nonesuch trading llc")
+        )
+    ).scalar_one()
+    assert row.bank_details == "IBAN GB00NONE009"

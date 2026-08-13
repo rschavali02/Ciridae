@@ -88,11 +88,17 @@ async def lookup_vendor(session: AsyncSession, vendor_name: str) -> dict:
             )
         ).first()
         if pending:
+            # Names the draft that actually matched, not the name printed on the
+            # invoice. The threshold above is deliberately loose, so an invoice
+            # reading "Nonesuch Trading Ltd" can match a draft for "Nonesuch
+            # Trading LLC" -- and reporting the invoice's spelling back would put
+            # a false statement into the transcript a human later reviews.
             return {
                 "match": "drafted",
+                "drafted_name": pending.name,
                 "detail": (
-                    f"{vendor_name!r} has already been drafted as a new vendor and is "
-                    "awaiting approval. It is not yet payable."
+                    f"{vendor_name!r} resembles {pending.name!r}, which has already been "
+                    "drafted as a new vendor and is awaiting approval. It is not yet payable."
                 ),
             }
         return {
@@ -155,14 +161,38 @@ async def draft_vendor(
         await session.execute(select(Vendor).where(Vendor.normalized_name == normalized))
     ).scalar_one_or_none()
     if existing is not None:
-        return {
+        # Bank details arriving with a repeat invoice are compared, never
+        # silently dropped. Two invoices from one payee naming different
+        # accounts is close to the canonical vendor-fraud tell, and an early
+        # return that ignores the second set is the one path where that signal
+        # disappears without reaching either the agent or the human who later
+        # approves the vendor.
+        #
+        # The stored value is not overwritten: the first submission is no more
+        # trustworthy than the second, and quietly replacing it would destroy
+        # the discrepancy rather than surface it.
+        conflicting = (
+            bank_details is not None
+            and existing.bank_details is not None
+            and bank_details.strip() != existing.bank_details.strip()
+        )
+
+        result = {
             "status": existing.approval_status,
             "payable": existing.approval_status == "active",
+            "bank_details_differ": conflicting,
             "detail": (
                 f"{vendor_name!r} is already on file with status "
                 f"{existing.approval_status!r}."
             ),
         }
+        if conflicting:
+            result["detail"] += (
+                " This invoice states different bank details from the ones already on "
+                f"file ({bank_details!r} against {existing.bank_details!r}). Neither has "
+                "been verified. Treat the discrepancy as a finding in its own right."
+            )
+        return result
 
     session.add(
         Vendor(
