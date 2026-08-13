@@ -4,7 +4,7 @@
 
 **Goal:** Upload an invoice, watch the agent work in near real time, and see the outcome — cleared for payment, or held with the reason — with a human approving any new payee the agent drafts.
 
-**Architecture:** Three layers, built bottom-up so each is testable before the next depends on it. Schema and tool changes first (currency, vendor status, `draft_vendor`), then the HTTP surface (`/extract` *evolves into* `POST /invoices` — it is not duplicated), then the React views. Live observability comes from creating the `agent_runs` row when a run starts and updating it per tool call, polled about once a second, rather than from a streaming protocol.
+**Architecture:** Three layers, built bottom-up so each is testable before the next depends on it. Schema and tool changes first (currency, vendor approval status, `draft_vendor`), then the HTTP surface (`/extract` *evolves into* `POST /invoices` — it is not duplicated), then the React views. Live observability comes from creating the `agent_runs` row when a run starts and updating it per tool call, polled about once a second, rather than from a streaming protocol.
 
 **Tech Stack:** FastAPI, SQLAlchemy 2.0 async, Alembic, Postgres 16 + pgvector, pytest/pytest-asyncio, Vite + React + TypeScript.
 
@@ -38,7 +38,7 @@ Read these before starting. They explain why several things are shaped the way t
 
 ## Phase A — Schema and tools
 
-### Task 1: Migration — vendor status and currency columns
+### Task 1: Migration — vendor approval status and currency columns
 
 **Files:**
 - Modify: `backend/app/models.py:46-51` (Vendor), `:54-` (Invoice), `:33-43` (PurchaseOrder)
@@ -57,19 +57,35 @@ class Vendor(Base):
     # 'pending_approval' | 'active'. A drafted vendor must never resolve in
     # lookup_vendor, or the next invoice from that payee matches cleanly and the
     # control disappears rather than holding.
-    status: Mapped[str] = mapped_column(String, nullable=False, server_default="active")
-    # 'agent' | 'human'
+    #
+    # Named `approval_status`, not `status`: `Invoice.status` already exists with
+    # a different value set that also has a pending-flavoured member.
+    #
+    # Python-side default, and the fail-safe way round -- an insert that forgets
+    # the column yields a non-payable vendor, not a payable one.
+    approval_status: Mapped[str] = mapped_column(
+        String, nullable=False, default="pending_approval"
+    )
+    # 'agent' | 'human'. Same value set as `AuditLog.actor`, but that table
+    # cannot carry it: `audit_log.invoice_id` is NOT NULL, so it structurally
+    # cannot record a vendor creation.
     created_by: Mapped[str] = mapped_column(String, nullable=False, server_default="human")
 ```
 
-Add to `Invoice` and `PurchaseOrder`:
+Because the default is Python-side and non-payable, every human-authored insert site must now state `approval_status="active"` explicitly: `fixtures/seed_vendors.py`, the `seeded_vendor` fixture in `tests/conftest.py`, the `ACME` dict in `app/eval/suite.py`, and `scripts/try_agent.py`.
+
+Add to `Invoice` and `PurchaseOrder` (full rationale on `PurchaseOrder.currency`; `Invoice.currency` cross-references it rather than repeating it):
 
 ```python
     # ISO 4217. Bare amounts cannot be compared across currencies -- a EUR
-    # invoice against a currency-less PO reports a meaningless 0.0% variance,
-    # which is what eval case 11 exists to catch.
+    # invoice against a currency-less PO reports a meaningless 0.0% variance.
+    # This is why case 11 (11_non_usd_currency_approve) cannot be scored today:
+    # §IV.F's local-currency rule cannot be evaluated when nothing records
+    # which currency anything is in.
     currency: Mapped[str] = mapped_column(String(3), nullable=True)
 ```
+
+Both tables also take a `CheckConstraint("currency IS NULL OR currency = upper(currency)")`. `fields.py` is LLM-populated, so `'eur'` and `'EUR'` will both arrive, and two spellings of one currency compare as a mismatch — a false alarm in the exact comparison the column exists to enable.
 
 **Step 2: Generate and inspect the migration**
 
@@ -77,17 +93,24 @@ Add to `Invoice` and `PurchaseOrder`:
 cd backend && alembic revision --autogenerate -m "vendor status and currency columns"
 ```
 
-Open the generated file. Expect four `op.add_column` calls. The `server_default` on the vendor columns is what backfills existing rows — confirm it is present, or existing vendors become NULL and stop resolving.
+Open the generated file and hand-edit it. `approval_status` takes `server_default='active'` on the `add_column` so pre-existing rows backfill (NULL would stop them resolving in `lookup_vendor`), then drops it immediately:
+
+```python
+op.add_column('vendors', sa.Column('approval_status', sa.String(), server_default='active', nullable=False))
+op.alter_column('vendors', 'approval_status', server_default=None)
+```
+
+`alembic/env.py` sets neither `compare_type` nor `compare_server_default`, so autogenerate will not detect drift between the model and the migration — keep them in step by hand.
 
 **Step 3: Apply and verify**
 
 ```bash
 alembic upgrade head
 docker compose exec db psql -U invoice_agent -d invoice_agent -c "\d vendors"
-docker compose exec db psql -U invoice_agent -d invoice_agent -c "SELECT name, status, created_by FROM vendors;"
+docker compose exec db psql -U invoice_agent -d invoice_agent -c "SELECT name, approval_status, created_by FROM vendors;"
 ```
 
-Expected: every existing vendor reads `active` / `human`.
+Expected: every existing vendor reads `active` / `human`, and `\d vendors` shows **no** server default on `approval_status`.
 
 **Step 4: Commit**
 
@@ -309,7 +332,7 @@ async def test_a_drafted_vendor_does_not_resolve(db_session):
         Vendor(
             name="Nonesuch Trading LLC",
             normalized_name="nonesuch trading llc",
-            status="pending_approval",
+            approval_status="pending_approval",
             created_by="agent",
         )
     )
@@ -328,7 +351,7 @@ Expected: FAIL — returns `resolved`
 
 **Step 3: Implement**
 
-Filter the similarity query to `status = 'active'`, then run a second query for pending matches so the agent is told the difference between "nobody by that name" and "already drafted, waiting on a human":
+Filter the similarity query to `approval_status = 'active'`, then run a second query for pending matches so the agent is told the difference between "nobody by that name" and "already drafted, waiting on a human":
 
 ```python
     rows = (
@@ -338,7 +361,7 @@ Filter the similarity query to `status = 'active'`, then run a second query for 
                 SELECT id, name, bank_details,
                        similarity(normalized_name, :name) AS sim
                 FROM vendors
-                WHERE status = 'active'
+                WHERE approval_status = 'active'
                   AND similarity(normalized_name, :name) > :threshold
                 ORDER BY sim DESC
                 LIMIT 2
@@ -354,7 +377,7 @@ Filter the similarity query to `status = 'active'`, then run a second query for 
                 text(
                     """
                     SELECT name FROM vendors
-                    WHERE status = 'pending_approval'
+                    WHERE approval_status = 'pending_approval'
                       AND similarity(normalized_name, :name) > :threshold
                     LIMIT 1
                     """
@@ -376,7 +399,7 @@ Filter the similarity query to `status = 'active'`, then run a second query for 
 **Step 4: Run the whole tool suite**
 
 Run: `pytest tests/test_tools.py -v -m "not integration"`
-Expected: PASS — the existing `lookup_vendor` tests still pass because seeded vendors default to `active`.
+Expected: PASS — the existing `lookup_vendor` tests still pass because every vendor they insert states `approval_status="active"`. Nothing defaults to `active`; a vendor built without that keyword is `pending_approval` and will stop resolving the moment this filter lands, so check any new insert site before assuming a failure here is a bug in the filter.
 
 **Step 5: Commit**
 
@@ -408,7 +431,7 @@ async def test_draft_vendor_creates_a_pending_row(db_session):
     row = (
         await db_session.execute(select(Vendor).where(Vendor.name == "Nonesuch Trading LLC"))
     ).scalar_one()
-    assert row.status == "pending_approval"
+    assert row.approval_status == "pending_approval"
     assert row.created_by == "agent"
 
 
@@ -429,7 +452,7 @@ async def test_draft_vendor_is_idempotent(db_session):
     await draft_vendor(db_session, vendor_name="Nonesuch Trading LLC")
 
     rows = (
-        await db_session.execute(select(Vendor).where(Vendor.status == "pending_approval"))
+        await db_session.execute(select(Vendor).where(Vendor.approval_status == "pending_approval"))
     ).scalars().all()
     assert len(rows) == 1
 ```
@@ -461,10 +484,11 @@ async def draft_vendor(
     ).scalar_one_or_none()
     if existing is not None:
         return {
-            "status": existing.status,
-            "payable": existing.status == "active",
+            "status": existing.approval_status,
+            "payable": existing.approval_status == "active",
             "detail": (
-                f"{vendor_name!r} is already on file with status {existing.status!r}."
+                f"{vendor_name!r} is already on file with status "
+                f"{existing.approval_status!r}."
             ),
         }
 
@@ -473,7 +497,7 @@ async def draft_vendor(
             name=vendor_name.strip(),
             normalized_name=normalized,
             bank_details=bank_details,
-            status="pending_approval",
+            approval_status="pending_approval",
             created_by="agent",
         )
     )
@@ -813,7 +837,7 @@ def test_lists_only_pending_vendors(client, drafted_vendor, seeded_vendor): ...
 def test_approving_activates_the_vendor(client, drafted_vendor, db_session):
     client.post(f"/vendors/{drafted_vendor.id}/approve")
     ...
-    assert row.status == "active"
+    assert row.approval_status == "active"
 
 
 def test_an_approved_vendor_then_resolves(client, drafted_vendor, db_session):
@@ -828,6 +852,116 @@ def test_an_approved_vendor_then_resolves(client, drafted_vendor, db_session):
 ```
 
 **Commit:** `feat: add vendor approval queue endpoints`
+
+---
+
+### Task 12b: End-to-end wiring test
+
+**Files:**
+- Create: `backend/tests/test_wiring.py`
+
+Every task in Phase A and B passes its own tests while the features they add can still fail *between* them. The currency chain is the clearest case: Task 1 adds the column, Task 2 makes extraction return the value, Task 3 compares it, and Task 8 writes the row. If Task 8 forgets to copy `fields.currency` onto the invoice, currency is extracted, discarded, and `get_purchase_order` sees `None` forever — silently falling back to the bare-numeral comparison this phase exists to remove. Each task is individually correct and the feature does nothing.
+
+These tests are the gate for that. **They stub the LLM and the agent**, so they cost nothing and run in the fast suite — they check plumbing, not judgement.
+
+**Step 1: Write the tests**
+
+```python
+# tests/test_wiring.py
+"""Cross-task wiring. Each of these passes only if several tasks agree."""
+
+import pytest
+from sqlalchemy import select
+
+from app.agent.tools import get_purchase_order, lookup_vendor
+from app.models import Invoice, PurchaseOrder, Vendor
+
+
+@pytest.mark.asyncio
+async def test_a_drafted_vendor_becomes_resolvable_only_after_approval(db_session):
+    """Tasks 4, 5 and 12 together. The control is worth nothing if any one of
+    the three is right on its own -- drafting must withhold payability, and
+    approval must be the only thing that grants it."""
+    from app.agent.tools import draft_vendor
+
+    await draft_vendor(db_session, vendor_name="Nonesuch Trading LLC")
+    before = await lookup_vendor(db_session, vendor_name="Nonesuch Trading LLC")
+
+    vendor = (
+        await db_session.execute(
+            select(Vendor).where(Vendor.normalized_name == "nonesuch trading llc")
+        )
+    ).scalar_one()
+    vendor.approval_status = "active"
+    await db_session.commit()
+
+    after = await lookup_vendor(db_session, vendor_name="Nonesuch Trading LLC")
+
+    assert before["match"] == "drafted"
+    assert after["match"] == "resolved"
+
+
+@pytest.mark.asyncio
+async def test_extracted_currency_reaches_the_invoice_row(db_session, monkeypatch):
+    """Tasks 1, 2 and 8. Extraction returning a currency is useless if the
+    background task drops it on the way to the database."""
+    from app.extraction.fields import ExtractedFields
+    from app.extraction.pipeline import ExtractionResult
+    import app.main as main
+
+    monkeypatch.setattr(
+        main,
+        "extract_invoice",
+        lambda path: ExtractionResult(
+            raw_text="ACME Incorporated, EUR 4,500.00",
+            fields=ExtractedFields(vendor_name="ACME Incorporated", amount=4500.0, currency="EUR"),
+            used_vision_fallback=False,
+        ),
+    )
+
+    invoice = Invoice(raw_pdf_path="x.pdf", status="pending")
+    db_session.add(invoice)
+    await db_session.commit()
+    await db_session.refresh(invoice)
+
+    await main.apply_extraction(db_session, invoice)
+
+    await db_session.refresh(invoice)
+    assert invoice.currency == "EUR"
+    assert invoice.amount == 4500.0
+
+
+@pytest.mark.asyncio
+async def test_currency_on_the_row_reaches_the_purchase_order_comparison(db_session):
+    """Tasks 1, 3 and 8. The column existing and the tool reading it are
+    different things; this fails if the runner does not bind invoice.currency."""
+    db_session.add(PurchaseOrder(po_number="PO-5", amount=4500.0, currency="USD"))
+    await db_session.commit()
+
+    result = await get_purchase_order(
+        db_session, po_number="PO-5", invoice_amount=4500.0, invoice_currency="EUR"
+    )
+
+    assert result["currency_match"] is False
+    assert "variance_percent" not in result
+```
+
+**Step 2: Run them**
+
+Run: `python -m pytest tests/test_wiring.py -v -m "not integration"`
+
+Expected: FAIL initially if any task in the chain is incomplete. The failure message tells you *which* link is broken, which is the point.
+
+**Step 3: Fix whatever is broken**
+
+Do not weaken these tests to make them pass. A failure here means one of tasks 1–12 left a gap — fix the gap. `apply_extraction` in Task 8 must be a separately callable function (not inline in the background task) precisely so this test can reach it without running the agent.
+
+**Step 4: Commit**
+
+```bash
+git add backend/tests/test_wiring.py
+git commit -m "test: assert the currency and vendor-approval chains work across tasks"
+```
 
 ---
 

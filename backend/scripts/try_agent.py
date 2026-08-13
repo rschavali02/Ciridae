@@ -35,6 +35,9 @@ async def main() -> None:
             name="ACME Incorporated",
             normalized_name="acme incorporated",
             bank_details="IBAN GB00ACME00000000000001",
+            # Stated, not defaulted: the column defaults to `pending_approval`
+            # so that nothing becomes payable by omission.
+            approval_status="active",
         )
         session.add(vendor)
         session.add(PurchaseOrder(po_number=fields.po_number or "PO-88213", amount=fields.amount))

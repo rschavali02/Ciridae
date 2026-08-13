@@ -58,7 +58,9 @@ async def test_flags_ambiguous_match(db_session):
     """Policy IV: a name resolving to more than one record must escalate, so the
     tool has to surface the ambiguity rather than silently picking a winner."""
     for name in ("Acme Industrial Supply", "Acme Industrial Services"):
-        db_session.add(Vendor(name=name, normalized_name=name.lower()))
+        db_session.add(
+            Vendor(name=name, normalized_name=name.lower(), approval_status="active")
+        )
     await db_session.commit()
 
     result = await lookup_vendor(db_session, vendor_name="Acme Industrial")
@@ -92,7 +94,9 @@ async def test_keeps_similarity_on_ambiguous_candidates(db_session):
     """Comparative use is legitimate: how close two candidates are to each
     other is exactly what makes the match ambiguous."""
     for name in ("Acme Industrial Supply", "Acme Industrial Services"):
-        db_session.add(Vendor(name=name, normalized_name=name.lower()))
+        db_session.add(
+            Vendor(name=name, normalized_name=name.lower(), approval_status="active")
+        )
     await db_session.commit()
 
     result = await lookup_vendor(db_session, vendor_name="Acme Industrial")

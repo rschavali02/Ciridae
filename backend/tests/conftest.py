@@ -73,6 +73,9 @@ async def seeded_vendor(db_session):
         name="ACME Incorporated",
         normalized_name="acme incorporated",
         bank_details="IBAN GB00ACME00000000000001",
+        # Stated, not defaulted: the column defaults to `pending_approval` so
+        # that nothing becomes payable by omission.
+        approval_status="active",
     )
     db_session.add(vendor)
     await db_session.commit()

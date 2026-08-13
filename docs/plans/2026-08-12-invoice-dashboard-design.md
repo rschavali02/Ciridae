@@ -35,8 +35,12 @@ Worth stating plainly, because it determines how much of this is new work.
 
 One migration, three changes.
 
-**`vendors` gains `status` and `created_by`.** `status` is `pending_approval` or
-`active`; `created_by` is `agent` or `human`. Existing rows become `active` / `human`.
+**`vendors` gains `approval_status` and `created_by`.** `approval_status` is
+`pending_approval` or `active`; `created_by` is `agent` or `human`. Existing rows are
+backfilled to `active` / `human`. It is `approval_status` rather than `status` because
+`Invoice.status` already exists with a different value set, and Phase B joins the two
+into one response model. It defaults to `pending_approval`, so a vendor becomes payable
+only by an explicit statement, never by omission.
 
 **`invoices` and `purchase_orders` gain `currency`.** Both amounts are currently bare
 `Numeric(12,2)`. The eval suite already caught what that costs: case 11 asks the agent
@@ -61,7 +65,7 @@ for those details is the invoice itself. So the agent prepares the record and a 
 completes it.
 
 - `lookup_vendor` returning no match lets the agent call a new `draft_vendor` tool,
-  which writes a row with `status='pending_approval'` and `created_by='agent'`.
+  which writes a row with `approval_status='pending_approval'` and `created_by='agent'`.
 - **The invoice still escalates.** Drafting never unlocks approval, on this invoice or
   any other.
 - A human reviews the draft, verifies bank details out of band, and activates it.
@@ -69,7 +73,7 @@ completes it.
 
 Two constraints that fail silently if missed:
 
-1. **A pending vendor must not resolve.** `lookup_vendor` matches `status='active'`
+1. **A pending vendor must not resolve.** `lookup_vendor` matches `approval_status='active'`
    only. If a drafted row counted as a match, the next invoice from that payee would
    resolve cleanly and the control would disappear rather than hold — the fraud window
    simply moves to invoice #2. A pending match returns a distinct third state.
@@ -118,7 +122,7 @@ threshold"…*
 | `GET /invoices/{id}` | Extracted fields, decision, confidence, reasoning, full tool-call transcript, retrieved policy clauses. |
 | `GET /invoices/{id}/activity` | Light poll target: run status and the latest tool call. |
 | `POST /invoices/{id}/approve` \| `/reject` | Human decision. Writes `audit_log`. |
-| `GET /vendors?status=pending_approval` | Drafted payees awaiting a human. |
+| `GET /vendors?approval_status=pending_approval` | Drafted payees awaiting a human. |
 | `POST /vendors/{id}/approve` | Activates the vendor. Writes `audit_log`. |
 
 ---
