@@ -285,3 +285,103 @@ async def test_detail_of_an_unknown_invoice_is_a_404(client):
     response = await client.get(f"/invoices/{uuid.uuid4()}")
 
     assert response.status_code == 404
+
+
+@pytest_asyncio.fixture
+async def running_invoice(db_session):
+    """An invoice whose review is still in progress.
+
+    Two calls recorded and no decision yet -- the state the transcript is left in
+    between `begin()` and `save()`, which is the whole window the ticker exists
+    to cover.
+    """
+    invoice = Invoice(
+        raw_pdf_path="fixtures/invoices/clean_acme.pdf",
+        invoice_number="INV-2001",
+        amount=5700.00,
+        currency="USD",
+        status="pending",
+    )
+    db_session.add(invoice)
+    await db_session.commit()
+    await db_session.refresh(invoice)
+
+    db_session.add(
+        AgentRun(
+            invoice_id=invoice.id,
+            source="live",
+            status="running",
+            transcript={
+                "tool_calls": [
+                    {
+                        "tool": "lookup_vendor",
+                        "input": {"vendor_name": "ACME Incorporated"},
+                        "output": {"match": "resolved"},
+                    },
+                    {
+                        "tool": "get_invoice_history",
+                        "input": {"vendor_name": "ACME Incorporated"},
+                        "output": {"invoice_count": 4},
+                    },
+                ],
+                "reasoning": None,
+            },
+        )
+    )
+    await db_session.commit()
+    return invoice
+
+
+@pytest.mark.asyncio
+async def test_activity_returns_the_latest_tool_call_while_running(client, running_invoice):
+    body = (await client.get(f"/invoices/{running_invoice.id}/activity")).json()
+
+    assert body["status"] == "running"
+    assert body["latest"]["tool"] == "get_invoice_history"
+    assert body["latest"]["input"] == {"vendor_name": "ACME Incorporated"}
+    assert body["call_count"] == 2
+    assert body["decision"] is None
+
+
+@pytest.mark.asyncio
+async def test_activity_does_not_carry_the_whole_transcript(client, running_invoice):
+    """This is fetched once a second for the length of a run. Sending every call
+    with its outputs each time re-sends the entire review to say one thing has
+    changed -- and that is what the detail endpoint is already for."""
+    body = (await client.get(f"/invoices/{running_invoice.id}/activity")).json()
+
+    assert "tool_calls" not in body
+    assert "output" not in body["latest"]
+
+
+@pytest.mark.asyncio
+async def test_activity_reports_the_decision_once_the_run_is_done(client, decided_invoice):
+    """The ticker stops on this. Without the decision here the poller has no way
+    to tell a finished review from a stalled one except by giving up."""
+    body = (await client.get(f"/invoices/{decided_invoice.id}/activity")).json()
+
+    assert body["status"] == "complete"
+    assert body["decision"] == "escalate"
+    assert body["latest"]["tool"] == "submit_recommendation"
+
+
+@pytest.mark.asyncio
+async def test_activity_before_the_run_starts_is_not_an_error(client, seeded_invoice):
+    """The client begins polling the moment it has an id, which is before the
+    background task has written a run row. A 404 in that window makes the ticker
+    fail on every upload it is meant to narrate."""
+    response = await client.get(f"/invoices/{seeded_invoice.id}/activity")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] is None
+    assert body["latest"] is None
+    assert body["call_count"] == 0
+    assert body["decision"] is None
+
+
+@pytest.mark.asyncio
+async def test_activity_for_an_unknown_invoice_is_a_404(client):
+    response = await client.get(f"/invoices/{uuid.uuid4()}/activity")
+
+    assert response.status_code == 404

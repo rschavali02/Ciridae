@@ -281,3 +281,40 @@ async def get_invoice(invoice_id: uuid.UUID, session: AsyncSession = Depends(get
         "tool_calls": tool_calls,
         "policy_clauses": policy_clauses(tool_calls),
     }
+
+
+@app.get("/invoices/{invoice_id}/activity")
+async def get_activity(invoice_id: uuid.UUID, session: AsyncSession = Depends(get_session)):
+    """What the agent is doing right now -- and nothing else.
+
+    Polled about once a second for the length of a review, so it answers with the
+    one call that has changed rather than the transcript it belongs to. Returning
+    the whole thing here would re-send the entire review every second to report a
+    single new line, and the detail endpoint already serves that.
+
+    Outputs are left out of `latest` for the same reason: a tool result runs to
+    kilobytes -- retrieved policy clauses especially -- while the ticker only
+    renders a label built from the tool name and its input.
+
+    `status` is the run's, not the invoice's, and is null until the run row
+    exists. The gap is real: the upload returns 202 as soon as the row is
+    written, and the client starts polling before the background task has begun.
+    Null means "not started", which is why that window is a 200 and not a 404 --
+    a 404 there would break the ticker on every upload it exists to narrate.
+    """
+    invoice = await session.get(Invoice, invoice_id)
+    if invoice is None:
+        raise HTTPException(status_code=404, detail=f"No invoice {invoice_id}")
+
+    run = (await latest_runs(session, [invoice.id])).get(invoice.id)
+    tool_calls = run.transcript.get("tool_calls", []) if run else []
+    latest = tool_calls[-1] if tool_calls else None
+
+    return {
+        "status": run.status if run else None,
+        "latest": (
+            {"tool": latest.get("tool"), "input": latest.get("input")} if latest else None
+        ),
+        "call_count": len(tool_calls),
+        "decision": run.decision if run else None,
+    }
