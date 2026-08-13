@@ -1,13 +1,15 @@
-"""The upload endpoint: one invoice in, one persisted row and one queued run out."""
+"""The invoice endpoints: one invoice in, and the queue and detail views out."""
 
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import select
 
 import app.main as main
-from app.models import Invoice
+from app.models import AgentRun, Invoice
 
 CLEAN_ACME = "fixtures/invoices/clean_acme.pdf"
 
@@ -92,4 +94,194 @@ async def test_upload_keeps_the_pdf_where_the_row_says_it_is(client, db_session,
 async def test_extract_endpoint_is_gone(client):
     """One upload path, not two. The stateless endpoint predates the schema."""
     response = await client.post("/extract")
+    assert response.status_code == 404
+
+
+@pytest_asyncio.fixture
+async def two_seeded_invoices(db_session):
+    """Two invoices with explicitly different creation times.
+
+    `created_at` defaults to `now()`, which in Postgres is the *transaction*
+    start time -- and the fixture writes both rows in one transaction, so
+    letting it default gives the two invoices identical timestamps and the
+    ordering assertion below would pass or fail at random.
+    """
+    now = datetime.now(timezone.utc)
+    older = Invoice(
+        raw_pdf_path="fixtures/invoices/older.pdf",
+        invoice_number="INV-OLD",
+        amount=100.00,
+        currency="USD",
+        status="pending",
+        created_at=now - timedelta(hours=1),
+    )
+    newer = Invoice(
+        raw_pdf_path="fixtures/invoices/newer.pdf",
+        invoice_number="INV-NEW",
+        amount=200.00,
+        currency="EUR",
+        status="pending",
+        created_at=now,
+    )
+    db_session.add_all([older, newer])
+    await db_session.commit()
+    return older, newer
+
+
+@pytest_asyncio.fixture
+async def decided_invoice(db_session):
+    """An invoice the agent has already finished reviewing.
+
+    The transcript is written by hand rather than by running the agent: what is
+    under test is that the endpoint surfaces a transcript, not that a live model
+    produces one.
+    """
+    invoice = Invoice(
+        raw_pdf_path="fixtures/invoices/nonesuch.pdf",
+        raw_text="Nonesuch Trading LLC invoice, $18,400.00",
+        invoice_number="INV-3001",
+        amount=18400.00,
+        currency="USD",
+        status="pending",
+    )
+    db_session.add(invoice)
+    await db_session.commit()
+    await db_session.refresh(invoice)
+
+    db_session.add(
+        AgentRun(
+            invoice_id=invoice.id,
+            source="live",
+            status="complete",
+            decision="escalate",
+            confidence=0.55,
+            transcript={
+                "tool_calls": [
+                    {
+                        "tool": "lookup_vendor",
+                        "input": {"vendor_name": "Nonesuch Trading LLC"},
+                        "output": {"match": "none", "detail": "No vendor on file."},
+                    },
+                    {
+                        "tool": "search_policy",
+                        "input": {"query": "unknown vendor"},
+                        "output": {
+                            "clauses": [
+                                {
+                                    "section": "IV. Vendor Management",
+                                    "text": "New payees require verification.",
+                                },
+                                {
+                                    "section": "II. Policy",
+                                    "text": "Invoices over $10,000 require review.",
+                                },
+                            ]
+                        },
+                    },
+                    {
+                        "tool": "submit_recommendation",
+                        "input": {
+                            "decision": "escalate",
+                            "confidence": 0.55,
+                            "reasoning": "No vendor on file for the payee.",
+                        },
+                        "output": {"final_decision": "escalate", "overridden": False},
+                    },
+                ],
+                "reasoning": "No vendor on file for the payee.",
+            },
+        )
+    )
+    await db_session.commit()
+    return invoice
+
+
+@pytest.mark.asyncio
+async def test_lists_invoices_newest_first(client, two_seeded_invoices):
+    """The queue is read top-down, so the invoice someone just uploaded has to
+    be the one they see first."""
+    response = await client.get("/invoices")
+
+    assert response.status_code == 200
+    assert [row["invoice_number"] for row in response.json()] == ["INV-NEW", "INV-OLD"]
+
+
+@pytest.mark.asyncio
+async def test_list_carries_the_decision_and_its_one_line_reason(client, decided_invoice):
+    """The queue splits on the decision, so a list without it cannot be split.
+    The reason comes along because a held invoice with no stated cause tells the
+    person looking at it nothing about what to do next."""
+    row = (await client.get("/invoices")).json()[0]
+
+    assert row["decision"] == "escalate"
+    assert row["confidence"] == 0.55
+    assert row["reasoning"] == "No vendor on file for the payee."
+    assert row["amount"] == 18400.00
+    assert row["currency"] == "USD"
+
+
+@pytest.mark.asyncio
+async def test_list_reports_an_undecided_invoice_as_such(client, two_seeded_invoices):
+    """An invoice whose run has not finished has no decision. Reporting one
+    anyway -- or omitting the key -- makes the queue lie about what has been
+    reviewed."""
+    row = (await client.get("/invoices")).json()[0]
+
+    assert row["decision"] is None
+    assert row["run_status"] is None
+
+
+@pytest.mark.asyncio
+async def test_list_labels_the_row_with_the_payee_the_agent_looked_up(client, decided_invoice):
+    """`invoices` carries no vendor name, and `vendor_id` is null while a payee
+    is unresolved -- which is exactly the invoice a queue must not render as a
+    blank row."""
+    row = (await client.get("/invoices")).json()[0]
+
+    assert row["vendor_name"] == "Nonesuch Trading LLC"
+
+
+@pytest.mark.asyncio
+async def test_detail_includes_the_full_tool_call_transcript(client, decided_invoice):
+    body = (await client.get(f"/invoices/{decided_invoice.id}")).json()
+
+    assert body["decision"] == "escalate"
+    assert body["reasoning"]
+    assert [c["tool"] for c in body["tool_calls"]] == [
+        "lookup_vendor",
+        "search_policy",
+        "submit_recommendation",
+    ]
+    assert "input" in body["tool_calls"][0] and "output" in body["tool_calls"][0]
+
+
+@pytest.mark.asyncio
+async def test_detail_surfaces_retrieved_policy_clauses(client, decided_invoice):
+    """Pulled out of the transcript rather than left buried in a tool result, so
+    the UI can show which provision the decision cited."""
+    body = (await client.get(f"/invoices/{decided_invoice.id}")).json()
+
+    assert body["policy_clauses"][0]["section"] == "IV. Vendor Management"
+    assert body["policy_clauses"][0]["text"]
+    assert len(body["policy_clauses"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_detail_of_an_unreviewed_invoice_is_not_an_error(client, seeded_invoice):
+    """An invoice is uploaded before it is reviewed, and the detail page is
+    where the ticker watches it happen. 404-ing until a run exists would make
+    the page unreachable for exactly the window it is there to cover."""
+    response = await client.get(f"/invoices/{seeded_invoice.id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["decision"] is None
+    assert body["tool_calls"] == []
+    assert body["policy_clauses"] == []
+
+
+@pytest.mark.asyncio
+async def test_detail_of_an_unknown_invoice_is_a_404(client):
+    response = await client.get(f"/invoices/{uuid.uuid4()}")
+
     assert response.status_code == 404
