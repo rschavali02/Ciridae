@@ -219,18 +219,28 @@ CASES = [
         # the norm and USD is the exception needing authorization. So a EUR
         # invoice is ordinary business and should approve, with the currency
         # handling cited rather than flagged as an anomaly.
+        # Both rows carry a real currency, deliberately. Before Task 1's schema
+        # change this case had no currency column to seed, so invoice and PO
+        # were both NULL and get_purchase_order's currencies_known check was
+        # False -- it fell back to the old bare-numeral comparison and this
+        # case passed without ever exercising currency-aware matching at all.
+        # It is EUR on both sides because the case tests whether the agent
+        # approves an ordinary same-currency invoice under §IV.F, not whether
+        # it flags a genuine cross-currency mismatch -- that is a distinct,
+        # not-yet-written case.
         name="11_non_usd_currency_approve",
         vendor=ACME,
         invoice={
             "amount": 4500.0,
             "invoice_number": "INV-2011",
+            "currency": "EUR",
             "raw_text": (
                 "ACME Incorporated invoice INV-2011, EUR 4,500.00, PO-5. "
                 "Payment in local currency."
             ),
         },
         past_invoices=routine_history([4400.0, 4600.0], first_number=1918),
-        purchase_order={"po_number": "PO-5", "amount": 4500.0},
+        purchase_order={"po_number": "PO-5", "amount": 4500.0, "currency": "EUR"},
         expected_decision="approve",
         expected_tools=[SEARCH_POLICY],
         needs_policy=True,
