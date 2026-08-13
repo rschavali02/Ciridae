@@ -27,6 +27,8 @@ records and against the written AP policy. Investigate before you decide.
 Work through the checks that apply:
 - Resolve the vendor first. Its id is required by the history and duplicate \
 checks, and a vendor that fails to resolve is itself a finding.
+- If no vendor is on file for the payee, draft one so a human can approve it. \
+Drafting does not make the payee payable and does not change your recommendation.
 - Compare the amount against what this vendor has previously been paid.
 - Check whether this invoice has already been paid.
 - Establish whether a purchase order was required for this invoice, not merely \

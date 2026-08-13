@@ -123,6 +123,25 @@ def build_tools(session: AsyncSession, transcript: RunTranscript, invoice: Invoi
         return json.dumps(out)
 
     @beta_async_tool
+    async def draft_vendor(vendor_name: str, bank_details: str | None = None) -> str:
+        """Queue an unknown payee for human approval.
+
+        Call this when lookup_vendor finds no vendor on file, so the payee is
+        ready for someone to verify. It does not make them payable and does not
+        change what you should recommend for this invoice -- an unapproved payee
+        still requires human review.
+
+        Args:
+            vendor_name: The payee name as printed on the invoice.
+            bank_details: Bank details printed on the invoice, if any. These are
+                recorded unverified, for a human to check against the vendor.
+        """
+        args = {"vendor_name": vendor_name, "bank_details": bank_details}
+        out = await tool_impls.draft_vendor(session, **args)
+        transcript.record_tool_call("draft_vendor", args, out)
+        return json.dumps(out)
+
+    @beta_async_tool
     async def submit_recommendation(
         decision: Literal["approve", "reject", "escalate"],
         confidence: float,
@@ -175,6 +194,7 @@ def build_tools(session: AsyncSession, transcript: RunTranscript, invoice: Invoi
         check_duplicate_invoice,
         get_purchase_order,
         search_policy,
+        draft_vendor,
         submit_recommendation,
     ]
 

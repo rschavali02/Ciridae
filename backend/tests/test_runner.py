@@ -10,12 +10,13 @@ def _tools(session, invoice):
 
 
 @pytest.mark.asyncio
-async def test_exposes_the_six_tools(db_session, seeded_invoice):
+async def test_exposes_the_seven_tools(db_session, seeded_invoice):
     """search_policy joined the set in Phase 5, once the baseline was recorded.
 
     It was absent through Phase 4 on purpose: the comparison only means
     something if policy access is the single thing that changed between the two
-    runs.
+    runs. draft_vendor joined next, so an unresolvable payee has an action
+    attached to it rather than only a finding.
     """
     assert set(_tools(db_session, seeded_invoice)) == {
         "lookup_vendor",
@@ -23,6 +24,7 @@ async def test_exposes_the_six_tools(db_session, seeded_invoice):
         "check_duplicate_invoice",
         "get_purchase_order",
         "search_policy",
+        "draft_vendor",
         "submit_recommendation",
     }
 
