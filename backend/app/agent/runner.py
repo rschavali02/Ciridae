@@ -39,6 +39,11 @@ def build_tools(session: AsyncSession, transcript: RunTranscript, invoice: Invoi
     Every tool is a closure over `session`, `transcript`, and `invoice`. Tools
     record themselves to the transcript as they run, because the Runner owns the
     loop -- there is no outer iteration of ours in which to record them.
+
+    Each recording is handed the session so it lands in the `agent_runs` row
+    immediately rather than at the end of the run. A review takes 30-60s; a
+    transcript only written afterwards leaves nothing to watch for that whole
+    time, which is the same reason there is no outer loop to record from.
     """
 
     @beta_async_tool
@@ -53,7 +58,9 @@ def build_tools(session: AsyncSession, transcript: RunTranscript, invoice: Invoi
             vendor_name: The vendor name exactly as printed on the invoice.
         """
         out = await tool_impls.lookup_vendor(session, vendor_name=vendor_name)
-        transcript.record_tool_call("lookup_vendor", {"vendor_name": vendor_name}, out)
+        await transcript.record_tool_call(
+            "lookup_vendor", {"vendor_name": vendor_name}, out, session=session
+        )
         return json.dumps(out)
 
     @beta_async_tool
@@ -70,7 +77,7 @@ def build_tools(session: AsyncSession, transcript: RunTranscript, invoice: Invoi
         """
         args = {"vendor_id": vendor_id, "lookback_days": lookback_days}
         out = await tool_impls.get_invoice_history(session, **args)
-        transcript.record_tool_call("get_invoice_history", args, out)
+        await transcript.record_tool_call("get_invoice_history", args, out, session=session)
         return json.dumps(out)
 
     @beta_async_tool
@@ -95,7 +102,7 @@ def build_tools(session: AsyncSession, transcript: RunTranscript, invoice: Invoi
         out = await tool_impls.check_duplicate_invoice(
             session, **args, exclude_invoice_id=invoice.id
         )
-        transcript.record_tool_call("check_duplicate_invoice", args, out)
+        await transcript.record_tool_call("check_duplicate_invoice", args, out, session=session)
         return json.dumps(out)
 
     @beta_async_tool
@@ -119,7 +126,9 @@ def build_tools(session: AsyncSession, transcript: RunTranscript, invoice: Invoi
             invoice_amount=float(invoice.amount) if invoice.amount is not None else None,
             invoice_currency=invoice.currency,
         )
-        transcript.record_tool_call("get_purchase_order", {"po_number": po_number}, out)
+        await transcript.record_tool_call(
+            "get_purchase_order", {"po_number": po_number}, out, session=session
+        )
         return json.dumps(out)
 
     @beta_async_tool
@@ -138,7 +147,7 @@ def build_tools(session: AsyncSession, transcript: RunTranscript, invoice: Invoi
         """
         args = {"vendor_name": vendor_name, "bank_details": bank_details}
         out = await tool_impls.draft_vendor(session, **args)
-        transcript.record_tool_call("draft_vendor", args, out)
+        await transcript.record_tool_call("draft_vendor", args, out, session=session)
         return json.dumps(out)
 
     @beta_async_tool
@@ -159,7 +168,7 @@ def build_tools(session: AsyncSession, transcript: RunTranscript, invoice: Invoi
         """
         args = {"decision": decision, "confidence": confidence, "reasoning": reasoning}
         out = tool_impls.submit_recommendation(**args)
-        transcript.record_tool_call("submit_recommendation", args, out)
+        await transcript.record_tool_call("submit_recommendation", args, out, session=session)
         transcript.record_final(
             decision=out["final_decision"],
             confidence=out["confidence"],
@@ -185,7 +194,9 @@ def build_tools(session: AsyncSession, transcript: RunTranscript, invoice: Invoi
             query: What you need the policy to tell you, in plain language.
         """
         out = await tool_impls.search_policy_tool(session, query=query)
-        transcript.record_tool_call("search_policy", {"query": query}, out)
+        await transcript.record_tool_call(
+            "search_policy", {"query": query}, out, session=session
+        )
         return json.dumps(out)
 
     return [
@@ -224,6 +235,10 @@ async def run_agent(
 ) -> RunTranscript:
     """Review one invoice and return the transcript of how it was decided."""
     transcript = RunTranscript(invoice_id=invoice.id, source=source)
+    # Before the first tool call, not after the last: the row is what the
+    # dashboard polls, so it has to exist for the length of the run rather than
+    # appear once there is nothing left to watch.
+    await transcript.begin(session)
 
     runner = client.beta.messages.tool_runner(
         model=MODEL,

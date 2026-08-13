@@ -141,6 +141,13 @@ class AgentRun(Base):
     id: Mapped[uuid.UUID] = uuid_pk()
     invoice_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("invoices.id"), nullable=False)
     source: Mapped[str] = mapped_column(String, nullable=False, default="live")  # "live" | "eval"
+    # 'running' | 'complete'. The row is now written when the run starts and
+    # updated per tool call, so a reader can watch a review in progress -- which
+    # means there is a state where the transcript is real but incomplete, and
+    # `decision IS NULL` alone cannot distinguish it from a finished run that
+    # failed to decide. `server_default='complete'` because every row written
+    # before this column belongs to a run that has already finished.
+    status: Mapped[str] = mapped_column(String, nullable=False, server_default="complete")
     transcript: Mapped[dict] = mapped_column(JSONB, nullable=False)
     decision: Mapped[str] = mapped_column(String, nullable=True)
     confidence: Mapped[float] = mapped_column(Float, nullable=True)
