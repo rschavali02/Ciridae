@@ -44,9 +44,14 @@ AMBIGUITY_MARGIN = 0.10
 async def lookup_vendor(session: AsyncSession, vendor_name: str) -> dict:
     """Resolve a printed vendor name against the vendor master file.
 
-    Returns one of three shapes, because the agent needs to act differently on
-    each: a clean resolution, nothing close enough, or several equally close
-    candidates (policy IV requires escalating the last two).
+    Returns one of four shapes, because the agent needs to act differently on
+    each: a clean resolution, nothing close enough, several equally close
+    candidates (policy IV requires escalating the last two), or a payee already
+    drafted and waiting on a human.
+
+    Only `active` vendors resolve. A drafted vendor must never match here, or
+    the next invoice from that payee resolves cleanly and the approval control
+    disappears rather than holding.
     """
     rows = (
         await session.execute(
@@ -55,7 +60,8 @@ async def lookup_vendor(session: AsyncSession, vendor_name: str) -> dict:
                 SELECT id, name, bank_details,
                        similarity(normalized_name, :name) AS sim
                 FROM vendors
-                WHERE similarity(normalized_name, :name) > :threshold
+                WHERE approval_status = 'active'
+                  AND similarity(normalized_name, :name) > :threshold
                 ORDER BY sim DESC
                 LIMIT 2
                 """
@@ -65,6 +71,30 @@ async def lookup_vendor(session: AsyncSession, vendor_name: str) -> dict:
     ).all()
 
     if not rows:
+        # A second query rather than one filtered in Python, so the agent is
+        # told the difference between "nobody by that name" and "already
+        # drafted, waiting on a human" -- the two call for different actions.
+        pending = (
+            await session.execute(
+                text(
+                    """
+                    SELECT name FROM vendors
+                    WHERE approval_status = 'pending_approval'
+                      AND similarity(normalized_name, :name) > :threshold
+                    LIMIT 1
+                    """
+                ),
+                {"name": vendor_name.lower(), "threshold": SIMILARITY_THRESHOLD},
+            )
+        ).first()
+        if pending:
+            return {
+                "match": "drafted",
+                "detail": (
+                    f"{vendor_name!r} has already been drafted as a new vendor and is "
+                    "awaiting approval. It is not yet payable."
+                ),
+            }
         return {
             "match": "none",
             "detail": f"No vendor on file resembles {vendor_name!r}.",

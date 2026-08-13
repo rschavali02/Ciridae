@@ -112,6 +112,30 @@ async def test_returns_bank_details_for_comparison(db_session, seeded_vendor):
     assert result["bank_details"] == "IBAN GB00ACME00000000000001"
 
 
+@pytest.mark.asyncio
+async def test_a_drafted_vendor_does_not_resolve(db_session):
+    """The control that makes vendor drafting safe.
+
+    If a pending row counted as a match, the second invoice from a fabricated
+    payee would resolve cleanly and approve -- the fraud window would move to
+    invoice #2 rather than closing.
+    """
+    db_session.add(
+        Vendor(
+            name="Nonesuch Trading LLC",
+            normalized_name="nonesuch trading llc",
+            approval_status="pending_approval",
+            created_by="agent",
+        )
+    )
+    await db_session.commit()
+
+    result = await lookup_vendor(db_session, vendor_name="Nonesuch Trading LLC")
+
+    assert result["match"] == "drafted"
+    assert "awaiting approval" in result["detail"].lower()
+
+
 # --- get_invoice_history ---------------------------------------------------
 
 
