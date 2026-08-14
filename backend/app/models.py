@@ -145,9 +145,17 @@ class AgentRun(Base):
     # updated per tool call, so a reader can watch a review in progress -- which
     # means there is a state where the transcript is real but incomplete, and
     # `decision IS NULL` alone cannot distinguish it from a finished run that
-    # failed to decide. `server_default='complete'` because every row written
-    # before this column belongs to a run that has already finished.
-    status: Mapped[str] = mapped_column(String, nullable=False, server_default="complete")
+    # failed to decide.
+    #
+    # No default, matching the precedent set for `Vendor.approval_status`: both
+    # of today's writers (`RunTranscript.begin`, `RunTranscript.save`) already
+    # set this explicitly, so a default is never exercised in practice. But
+    # `'complete'` is the wrong direction to fail open in -- a future insert
+    # path that forgot to set it would have a genuinely-running row silently
+    # read as finished, stopping the dashboard ticker early and reporting a
+    # settled review that never happened. Omitting the column should raise at
+    # insert time, not resolve to a plausible-looking lie.
+    status: Mapped[str] = mapped_column(String, nullable=False)
     transcript: Mapped[dict] = mapped_column(JSONB, nullable=False)
     decision: Mapped[str] = mapped_column(String, nullable=True)
     confidence: Mapped[float] = mapped_column(Float, nullable=True)
