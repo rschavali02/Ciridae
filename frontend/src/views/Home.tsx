@@ -128,12 +128,16 @@ function Home() {
             </thead>
             <tbody>
               {invoices!.map((invoice) => (
-                <tr
-                  key={invoice.id}
-                  className={decisionRowClass(invoice.decision)}
-                  onClick={() => setSelectedId(invoice.id)}
-                >
-                  <td>{invoice.vendor_name ?? "Unknown vendor"}</td>
+                <tr key={invoice.id} className={decisionRowClass(invoice.decision)}>
+                  <td>
+                    <button
+                      type="button"
+                      className="vendor-link"
+                      onClick={() => setSelectedId(invoice.id)}
+                    >
+                      {invoice.vendor_name ?? "Unknown vendor"}
+                    </button>
+                  </td>
                   <td>{formatAmount(invoice.amount, invoice.currency)}</td>
                   <td>
                     {invoice.decision ?? (invoice.run_status === "running" ? "reviewing…" : "—")}

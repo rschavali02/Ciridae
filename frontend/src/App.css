@@ -115,10 +115,6 @@ main.home-queue .uploader h1 {
   table-layout: fixed;
 }
 
-.spreadsheet tbody tr {
-  cursor: pointer;
-}
-
 /* The colored section each row asks for: a left stripe plus a light fill, so
    the outcome reads at a glance without needing to read the decision cell. */
 .spreadsheet tr.row-approved {
@@ -137,6 +133,60 @@ main.home-queue .uploader h1 {
 
 .spreadsheet tr.row-held:hover {
   background: #fbdbdb;
+}
+
+/* The vendor name is the one thing in a row that opens the invoice, so it is
+   styled as a link rather than relying on the whole row being clickable with
+   no visual sign of it. */
+.vendor-link {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: #2b6cb0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.vendor-link:hover {
+  color: #1a4d85;
+}
+
+/* --- Reasoning summary ---------------------------------------------------- */
+
+/* The agent's own opening sentence, set apart from the numbered findings
+   below it -- the "high level summary" a reviewer reads before deciding
+   whether the detail underneath is worth opening. */
+.reasoning-headline {
+  font-size: 1.05rem;
+  font-weight: 600;
+  margin: 0 0 0.75rem;
+}
+
+.reasoning-points {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+.reasoning-points li {
+  margin-bottom: 0.6rem;
+  line-height: 1.5;
+}
+
+/* --- PDF preview inside the detail modal ---------------------------------- */
+
+/* Sized explicitly rather than via a flex parent's height, unlike the
+   split-screen preview during processing -- the modal has no such parent to
+   inherit height from. */
+.modal-pdf {
+  height: 55vh;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #f5f5f5;
+  margin-bottom: 1rem;
 }
 
 /* Uploading: the form is gone entirely (not just hidden) and the page is a

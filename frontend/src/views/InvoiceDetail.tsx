@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { approveInvoice, getInvoice, rejectInvoice, type InvoiceDetail as InvoiceDetailType } from "../api";
+import PdfPreview from "../components/PdfPreview";
+import ReasoningSummary from "../components/ReasoningSummary";
 import ToolCallTimeline from "../components/ToolCallTimeline";
 
 interface InvoiceDetailProps {
@@ -73,6 +75,10 @@ function InvoiceDetail({ invoiceId, onBack }: InvoiceDetailProps) {
 
       <h1>{invoice.vendor_name ?? "Unknown vendor"}</h1>
 
+      <section className="modal-pdf">
+        <PdfPreview invoiceId={invoice.id} />
+      </section>
+
       <section>
         <table>
           <tbody>
@@ -110,7 +116,7 @@ function InvoiceDetail({ invoiceId, onBack }: InvoiceDetailProps) {
 
       <section>
         <h2>Reasoning</h2>
-        <p>{invoice.reasoning ?? "No reasoning recorded."}</p>
+        <ReasoningSummary reasoning={invoice.reasoning} />
       </section>
 
       <section>
