@@ -172,6 +172,16 @@ class AuditLog(Base):
     action: Mapped[str] = mapped_column(String, nullable=False)
     before_state: Mapped[dict] = mapped_column(JSONB, nullable=True)
     after_state: Mapped[dict] = mapped_column(JSONB, nullable=True)
+    # The reviewer's own words for why, distinct from the agent's reasoning
+    # already sitting in before_state["decision"]/after_state -- a note here is
+    # a person answering "why did I decide this", which the agent's transcript
+    # cannot answer on their behalf.
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # clock_timestamp(), not now(): now() returns the time the enclosing
+    # transaction started, which is identical for every row written inside one
+    # transaction. Two decisions on the same invoice, made moments apart but
+    # committed together, would tie -- and a log whose entire purpose is
+    # chronological order should not have rows that cannot be told apart.
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
+        DateTime(timezone=True), server_default=func.clock_timestamp()
     )

@@ -5,6 +5,7 @@ from pathlib import Path
 from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -361,8 +362,15 @@ def audit_state(invoice: Invoice, run: AgentRun | None) -> dict:
     }
 
 
+class DecisionNote(BaseModel):
+    # Optional, and a request with no body at all must still work -- the
+    # existing tests call approve/reject with nothing attached, and a note is
+    # something a reviewer adds, not something the endpoint should require.
+    note: str | None = None
+
+
 async def record_human_decision(
-    session: AsyncSession, invoice_id: uuid.UUID, status: str, action: str
+    session: AsyncSession, invoice_id: uuid.UUID, status: str, action: str, note: str | None
 ) -> dict:
     """Settle an invoice on a person's authority, and record that they did.
 
@@ -372,7 +380,9 @@ async def record_human_decision(
 
     The agent's run is left exactly as it was. A human decision is a separate
     event from the review that preceded it -- overwriting the recommendation
-    would erase the disagreement, which is the part worth keeping.
+    would erase the disagreement, which is the part worth keeping. The note is
+    the reviewer's own words for why -- distinct from that reasoning, not a
+    replacement for it.
     """
     invoice = await session.get(Invoice, invoice_id)
     if invoice is None:
@@ -391,6 +401,7 @@ async def record_human_decision(
             action=action,
             before_state=before,
             after_state=audit_state(invoice, run),
+            note=note,
         )
     )
     await session.commit()
@@ -402,7 +413,9 @@ async def record_human_decision(
 
 @app.post("/invoices/{invoice_id}/approve")
 async def approve_invoice(
-    invoice_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+    invoice_id: uuid.UUID,
+    payload: DecisionNote | None = None,
+    session: AsyncSession = Depends(get_session),
 ):
     """Clear an invoice for payment.
 
@@ -412,16 +425,77 @@ async def approve_invoice(
     disagree about what happened. Every call writes its own audit row, so a
     changed mind reads as two decisions rather than as one silently rewritten.
     """
-    return await record_human_decision(session, invoice_id, "approved", "approve")
+    note = payload.note if payload else None
+    return await record_human_decision(session, invoice_id, "approved", "approve", note)
 
 
 @app.post("/invoices/{invoice_id}/reject")
 async def reject_invoice(
-    invoice_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+    invoice_id: uuid.UUID,
+    payload: DecisionNote | None = None,
+    session: AsyncSession = Depends(get_session),
 ):
     """Refuse an invoice. Terminal in the same sense `approved` is -- it records
     the decision; nothing downstream acts on it."""
-    return await record_human_decision(session, invoice_id, "rejected", "reject")
+    note = payload.note if payload else None
+    return await record_human_decision(session, invoice_id, "rejected", "reject", note)
+
+
+@app.get("/audit-log")
+async def list_audit_log(session: AsyncSession = Depends(get_session)):
+    """Every human decision, newest first -- the "when did someone act, and
+    why" view the queue itself does not answer.
+
+    `before_state`/`after_state` already carry the agent's decision and
+    confidence at that moment, so a reviewer opening this can see both what
+    they overrode (or confirmed) and their own reasoning for it, not just the
+    bare action.
+    """
+    entries = (
+        await session.execute(
+            select(AuditLog).where(AuditLog.actor == "human").order_by(AuditLog.created_at.desc())
+        )
+    ).scalars().all()
+
+    invoice_ids = {e.invoice_id for e in entries}
+    invoices = {
+        invoice.id: invoice
+        for invoice in (
+            await session.execute(select(Invoice).where(Invoice.id.in_(invoice_ids)))
+        ).scalars().all()
+    }
+    vendor_ids = {inv.vendor_id for inv in invoices.values() if inv.vendor_id is not None}
+    vendors = {
+        vendor.id: vendor
+        for vendor in (
+            await session.execute(select(Vendor).where(Vendor.id.in_(vendor_ids)))
+        ).scalars().all()
+    }
+    # Same fallback every other view uses: an invoice whose vendor never
+    # resolved has no Vendor row to read a name from, and payee_name() is what
+    # falls back to the name the agent tried to look up instead of leaving the
+    # row blank -- exactly the case a rejected, unresolved-payee invoice is.
+    runs = await latest_runs(session, list(invoice_ids))
+
+    result = []
+    for entry in entries:
+        invoice = invoices.get(entry.invoice_id)
+        vendor = vendors.get(invoice.vendor_id) if invoice and invoice.vendor_id else None
+        run = runs.get(entry.invoice_id)
+        result.append(
+            {
+                "id": str(entry.id),
+                "invoice_id": str(entry.invoice_id),
+                "vendor_name": payee_name(invoice, vendor, run) if invoice else None,
+                "amount": float(invoice.amount) if invoice and invoice.amount is not None else None,
+                "currency": invoice.currency if invoice else None,
+                "action": entry.action,
+                "note": entry.note,
+                "agent_decision": (entry.before_state or {}).get("decision"),
+                "decided_at": entry.created_at.isoformat() if entry.created_at else None,
+            }
+        )
+    return result
 
 
 @app.get("/vendors/pending")

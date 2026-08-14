@@ -515,3 +515,70 @@ async def test_serves_the_uploaded_pdf(client, db_session, queued_runs):
 async def test_file_for_an_unknown_invoice_is_a_404(client):
     response = await client.get(f"/invoices/{uuid.uuid4()}/file")
     assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_approve_stores_the_reviewers_note(client, escalated_invoice, db_session):
+    response = await client.post(
+        f"/invoices/{escalated_invoice.id}/approve",
+        json={"note": "Confirmed with the requesting unit; the PO variance is expected."},
+    )
+
+    assert response.status_code == 200
+    row = (await db_session.execute(select(AuditLog))).scalar_one()
+    assert row.note == "Confirmed with the requesting unit; the PO variance is expected."
+
+
+@pytest.mark.asyncio
+async def test_approve_with_no_body_leaves_the_note_empty(client, escalated_invoice, db_session):
+    """The existing no-body call sites must keep working -- a note is something a
+    reviewer adds, not something the endpoint should require."""
+    response = await client.post(f"/invoices/{escalated_invoice.id}/approve")
+
+    assert response.status_code == 200
+    row = (await db_session.execute(select(AuditLog))).scalar_one()
+    assert row.note is None
+
+
+@pytest.mark.asyncio
+async def test_audit_log_lists_decisions_newest_first(client, escalated_invoice, db_session):
+    await client.post(
+        f"/invoices/{escalated_invoice.id}/approve", json={"note": "Looks right to me."}
+    )
+
+    entries = (await client.get("/audit-log")).json()
+
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["action"] == "approve"
+    assert entry["note"] == "Looks right to me."
+    # escalated_invoice's payee never resolves to a Vendor row -- this is the
+    # name payee_name() falls back to reading off the agent's own
+    # lookup_vendor call, the same label the queue and detail views show.
+    assert entry["vendor_name"] == "Nonesuch Trading LLC"
+    assert entry["amount"] == 18400.00
+    # What the agent had concluded before this decision overrode it -- the
+    # thing that makes "someone approved it" legible as "someone released a
+    # hold", not just a bare action.
+    assert entry["agent_decision"] == "escalate"
+    assert entry["decided_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_audit_log_omits_agent_only_activity(client, decided_invoice):
+    """The agent's own run never writes to audit_log -- only a human decision
+    does -- so a reviewed-but-unactioned invoice should not appear here at all."""
+    entries = (await client.get("/audit-log")).json()
+    assert entries == []
+
+
+@pytest.mark.asyncio
+async def test_audit_log_orders_most_recent_decision_first(client, escalated_invoice, db_session):
+    await client.post(f"/invoices/{escalated_invoice.id}/approve")
+    await client.post(f"/invoices/{escalated_invoice.id}/reject")
+
+    entries = (await client.get("/audit-log")).json()
+
+    assert len(entries) == 2
+    assert entries[0]["action"] == "reject"
+    assert entries[1]["action"] == "approve"
