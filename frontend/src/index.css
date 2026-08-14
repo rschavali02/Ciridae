@@ -1,8 +1,10 @@
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
   font: 16px/1.5 system-ui, sans-serif;
 }
 
 body {
   margin: 0;
+  background: #ffffff;
+  color: #1a1a1a;
 }

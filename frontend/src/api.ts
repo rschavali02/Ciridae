@@ -94,6 +94,10 @@ export async function listPendingVendors(): Promise<PendingVendor[]> {
   return handleResponse(response);
 }
 
+export function invoiceFileUrl(id: string): string {
+  return `${API_BASE}/invoices/${id}/file`;
+}
+
 export async function approveVendor(
   id: string
 ): Promise<{ id: string; name: string; approval_status: string }> {

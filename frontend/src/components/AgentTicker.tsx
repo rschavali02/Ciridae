@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getActivity, type Activity } from "../api";
 
 const LABELS: Record<string, (input: any) => string> = {
@@ -18,14 +18,24 @@ function describeStep(tool: string, input: Record<string, unknown>): string {
 
 interface AgentTickerProps {
   invoiceId: string;
+  /** Called once, the first time polling observes a settled run. */
+  onSettled?: (activity: Activity) => void;
 }
 
-function AgentTicker({ invoiceId }: AgentTickerProps) {
+function AgentTicker({ invoiceId, onSettled }: AgentTickerProps) {
   const [activity, setActivity] = useState<Activity | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // A ref rather than an effect dependency: the caller's callback is typically
+  // a fresh closure every render, and depending on it directly would restart
+  // polling -- clearing progress and re-triggering "Starting…" -- on every
+  // unrelated re-render of the parent.
+  const onSettledRef = useRef(onSettled);
+  onSettledRef.current = onSettled;
+
   useEffect(() => {
     let cancelled = false;
+    let settled = false;
     let intervalId: ReturnType<typeof setInterval> | undefined;
 
     async function poll() {
@@ -33,8 +43,17 @@ function AgentTicker({ invoiceId }: AgentTickerProps) {
         const next = await getActivity(invoiceId);
         if (cancelled) return;
         setActivity(next);
-        if (next.status !== "running" && intervalId !== undefined) {
-          clearInterval(intervalId);
+
+        // null means the row does not exist yet -- the window between the
+        // upload responding and run_agent's begin() actually committing --
+        // and must not be read as "finished with nothing to show".
+        const isSettled = next.status !== null && next.status !== "running";
+        if (isSettled) {
+          if (intervalId !== undefined) clearInterval(intervalId);
+          if (!settled) {
+            settled = true;
+            onSettledRef.current?.(next);
+          }
         }
       } catch (err) {
         if (cancelled) return;
@@ -56,7 +75,7 @@ function AgentTicker({ invoiceId }: AgentTickerProps) {
     return <p className="error">{error}</p>;
   }
 
-  if (!activity) {
+  if (!activity || activity.status === null) {
     return <p className="ticker">Starting…</p>;
   }
 
@@ -72,7 +91,7 @@ function AgentTicker({ invoiceId }: AgentTickerProps) {
 
   return (
     <p className="ticker">
-      Done — {activity.decision ? `recommended ${activity.decision}` : activity.status}
+      Done — {activity.decision ? `recommended ${activity.decision}` : "no decision reached"}
     </p>
   );
 }
