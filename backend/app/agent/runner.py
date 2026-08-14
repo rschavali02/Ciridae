@@ -251,13 +251,42 @@ async def run_agent(
         max_iterations=MAX_ITERATIONS,
     )
 
-    async for _message in runner:
-        # submit_recommendation settles the transcript as a side effect of
-        # running, so a recorded decision is how we know the agent has
-        # committed. Breaking here skips the wrap-up turn it would otherwise
-        # spend narrating a decision already made.
-        if transcript.decision is not None:
-            break
+    try:
+        async for _message in runner:
+            # submit_recommendation settles the transcript as a side effect of
+            # running, so a recorded decision is how we know the agent has
+            # committed. Breaking here skips the wrap-up turn it would otherwise
+            # spend narrating a decision already made.
+            if transcript.decision is not None:
+                break
+    except Exception as exc:
+        # The tool runner swallows exceptions raised inside a tool call --
+        # turns them into an error tool_result and keeps looping -- so
+        # whatever reaches here escaped that handling entirely. The likely
+        # cause is a poisoned session: every tool shares one AsyncSession for
+        # the whole run, and any failed DB call inside it (deadlock, dropped
+        # connection, constraint violation) leaves that session needing a
+        # rollback before it can be used again. Nothing upstream provides one,
+        # so every later tool call degrades the same way, and the exception
+        # that actually surfaces is often the *next* unrelated query rather
+        # than the one that caused the poisoning.
+        #
+        # Without this, the run's agent_runs row is abandoned at
+        # status="running" forever: the dashboard ticker polls it
+        # indefinitely showing stale progress, and the invoice matches
+        # neither the approved nor the held bucket on the queue, so it
+        # disappears from the primary triage screen entirely. Silence must
+        # never resolve toward payment applies here too -- a crash is
+        # unresolved, and unresolved must read as escalate, not as "still in
+        # progress" with no way to tell the two apart.
+        await session.rollback()
+        transcript.record_final(
+            decision="escalate",
+            confidence=0.0,
+            reasoning=f"Agent run failed before reaching a decision: {exc}",
+        )
+        await transcript.save(session)
+        raise
 
     if transcript.decision is None:
         # Out of iterations with nothing submitted. Escalate rather than leave
