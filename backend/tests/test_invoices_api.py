@@ -490,3 +490,28 @@ async def test_deciding_an_unknown_invoice_is_a_404(client, db_session):
         assert response.status_code == 404
 
     assert (await db_session.execute(select(AuditLog))).scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_serves_the_uploaded_pdf(client, db_session, queued_runs):
+    """The upload-time preview renders this directly, so it has to be the same
+    bytes the agent's extraction ran against -- not a re-fetch, not a copy."""
+    with open(CLEAN_ACME, "rb") as f:
+        original_bytes = f.read()
+        f.seek(0)
+        response = await client.post(
+            "/invoices", files={"file": ("clean_acme.pdf", f, "application/pdf")}
+        )
+    invoice_id = response.json()["id"]
+
+    file_response = await client.get(f"/invoices/{invoice_id}/file")
+
+    assert file_response.status_code == 200
+    assert file_response.headers["content-type"] == "application/pdf"
+    assert file_response.content == original_bytes
+
+
+@pytest.mark.asyncio
+async def test_file_for_an_unknown_invoice_is_a_404(client):
+    response = await client.get(f"/invoices/{uuid.uuid4()}/file")
+    assert response.status_code == 404

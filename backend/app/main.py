@@ -4,6 +4,7 @@ from pathlib import Path
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -281,6 +282,25 @@ async def get_invoice(invoice_id: uuid.UUID, session: AsyncSession = Depends(get
         "tool_calls": tool_calls,
         "policy_clauses": policy_clauses(tool_calls),
     }
+
+
+@app.get("/invoices/{invoice_id}/file")
+async def get_invoice_file(invoice_id: uuid.UUID, session: AsyncSession = Depends(get_session)):
+    """The invoice's own PDF, for the upload-time preview.
+
+    Serves straight from `raw_pdf_path` rather than proxying through anything
+    that re-derives it, so what a reviewer sees while the agent works is
+    provably the same bytes the agent's extraction ran against.
+    """
+    invoice = await session.get(Invoice, invoice_id)
+    if invoice is None:
+        raise HTTPException(status_code=404, detail=f"No invoice {invoice_id}")
+
+    path = Path(invoice.raw_pdf_path)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Invoice file is no longer on disk")
+
+    return FileResponse(path, media_type="application/pdf")
 
 
 @app.get("/invoices/{invoice_id}/activity")
