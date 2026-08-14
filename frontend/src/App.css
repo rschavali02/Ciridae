@@ -276,3 +276,53 @@ main.home-processing {
   cursor: pointer;
   z-index: 5;
 }
+
+/* --- Top-level tabs -------------------------------------------------------- */
+
+.tabs {
+  display: flex;
+  gap: 0.5rem;
+  max-width: 1000px;
+  margin: 1.5rem auto 0;
+  padding: 0 1rem;
+}
+
+.tabs button {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 0.4rem 0.1rem;
+  font-size: 0.95rem;
+  color: #666;
+  cursor: pointer;
+}
+
+.tabs button.active {
+  color: #1a1a1a;
+  border-bottom-color: #2b6cb0;
+  font-weight: 600;
+}
+
+.tabs button:hover {
+  color: #1a1a1a;
+}
+
+/* --- Decision note ---------------------------------------------------------- */
+
+.decision-note label {
+  display: block;
+  font-size: 0.85rem;
+  color: #555;
+  margin-bottom: 0.3rem;
+}
+
+.decision-note textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  padding: 0.5rem;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  resize: vertical;
+  margin-bottom: 0.75rem;
+}

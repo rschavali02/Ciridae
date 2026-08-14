@@ -1,11 +1,14 @@
 import { useEffect, useState } from "react";
 import { listPendingVendors } from "./api";
+import History from "./views/History";
 import Home from "./views/Home";
 import VendorApprovals from "./views/VendorApprovals";
 import "./App.css";
 
+type Screen = "home" | "history" | "vendors";
+
 function App() {
-  const [screen, setScreen] = useState<"home" | "vendors">("home");
+  const [screen, setScreen] = useState<Screen>("home");
   const [pendingVendorCount, setPendingVendorCount] = useState(0);
 
   // Polled rather than refreshed only on invoice completion: a draft can also
@@ -38,12 +41,30 @@ function App() {
 
   return (
     <>
+      <nav className="tabs">
+        <button
+          type="button"
+          className={screen === "home" ? "active" : ""}
+          onClick={() => setScreen("home")}
+        >
+          Invoices
+        </button>
+        <button
+          type="button"
+          className={screen === "history" ? "active" : ""}
+          onClick={() => setScreen("history")}
+        >
+          History
+        </button>
+      </nav>
+
       {pendingVendorCount > 0 && (
         <button type="button" className="vendor-badge" onClick={() => setScreen("vendors")}>
           {pendingVendorCount} vendor{pendingVendorCount === 1 ? "" : "s"} awaiting approval
         </button>
       )}
-      <Home />
+
+      {screen === "home" ? <Home /> : <History onBack={() => setScreen("home")} />}
     </>
   );
 }

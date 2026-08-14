@@ -23,6 +23,7 @@ function InvoiceDetail({ invoiceId, onBack }: InvoiceDetailProps) {
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actingOn, setActingOn] = useState<"approve" | "reject" | null>(null);
+  const [note, setNote] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -48,8 +49,15 @@ function InvoiceDetail({ invoiceId, onBack }: InvoiceDetailProps) {
     setActingOn(action);
     setActionError(null);
     try {
-      const summary = await (action === "approve" ? approveInvoice : rejectInvoice)(invoiceId);
+      const summary = await (action === "approve" ? approveInvoice : rejectInvoice)(
+        invoiceId,
+        note
+      );
       setInvoice((prev) => (prev ? { ...prev, ...summary } : prev));
+      // Cleared on success, not on every keystroke: a failed attempt should
+      // leave what was typed in place rather than making the reviewer retype
+      // their reasoning after a transient error.
+      setNote("");
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
@@ -142,13 +150,23 @@ function InvoiceDetail({ invoiceId, onBack }: InvoiceDetailProps) {
 
       {actionError && <p className="error">{actionError}</p>}
 
-      <section>
-        <button type="button" onClick={() => handleDecision("approve")} disabled={actingOn !== null}>
-          {actingOn === "approve" ? "Approving…" : "Approve"}
-        </button>
-        <button type="button" onClick={() => handleDecision("reject")} disabled={actingOn !== null}>
-          {actingOn === "reject" ? "Rejecting…" : "Reject"}
-        </button>
+      <section className="decision-note">
+        <label htmlFor="decision-note">Note (optional)</label>
+        <textarea
+          id="decision-note"
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="Why you're approving or rejecting this -- goes on the audit record."
+          rows={3}
+        />
+        <div>
+          <button type="button" onClick={() => handleDecision("approve")} disabled={actingOn !== null}>
+            {actingOn === "approve" ? "Approving…" : "Approve"}
+          </button>
+          <button type="button" onClick={() => handleDecision("reject")} disabled={actingOn !== null}>
+            {actingOn === "reject" ? "Rejecting…" : "Reject"}
+          </button>
+        </div>
       </section>
     </main>
   );

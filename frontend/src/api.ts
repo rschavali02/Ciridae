@@ -45,6 +45,18 @@ export interface PendingVendor {
   bank_details: string | null;
 }
 
+export interface AuditEntry {
+  id: string;
+  invoice_id: string;
+  vendor_name: string | null;
+  amount: number | null;
+  currency: string | null;
+  action: string;
+  note: string | null;
+  agent_decision: string | null;
+  decided_at: string | null;
+}
+
 async function handleResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
     throw new Error(`Request failed: ${response.status} ${response.statusText}`);
@@ -79,13 +91,31 @@ export async function getActivity(id: string): Promise<Activity> {
   return handleResponse(response);
 }
 
-export async function approveInvoice(id: string): Promise<InvoiceSummary> {
-  const response = await fetch(`${API_BASE}/invoices/${id}/approve`, { method: "POST" });
+async function decide(id: string, action: "approve" | "reject", note: string): Promise<InvoiceSummary> {
+  const trimmed = note.trim();
+  const response = await fetch(`${API_BASE}/invoices/${id}/${action}`, {
+    method: "POST",
+    // Omitted entirely rather than sent as {note: ""}: the backend already
+    // treats a missing body as "no note", so an empty string would just be a
+    // second, redundant way of saying the same thing.
+    ...(trimmed && {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ note: trimmed }),
+    }),
+  });
   return handleResponse(response);
 }
 
-export async function rejectInvoice(id: string): Promise<InvoiceSummary> {
-  const response = await fetch(`${API_BASE}/invoices/${id}/reject`, { method: "POST" });
+export async function approveInvoice(id: string, note = ""): Promise<InvoiceSummary> {
+  return decide(id, "approve", note);
+}
+
+export async function rejectInvoice(id: string, note = ""): Promise<InvoiceSummary> {
+  return decide(id, "reject", note);
+}
+
+export async function listAuditLog(): Promise<AuditEntry[]> {
+  const response = await fetch(`${API_BASE}/audit-log`);
   return handleResponse(response);
 }
 
