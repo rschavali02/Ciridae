@@ -49,15 +49,13 @@ function InvoiceDetail({ invoiceId, onBack }: InvoiceDetailProps) {
     setActingOn(action);
     setActionError(null);
     try {
-      const summary = await (action === "approve" ? approveInvoice : rejectInvoice)(
-        invoiceId,
-        note
-      );
-      setInvoice((prev) => (prev ? { ...prev, ...summary } : prev));
-      // Cleared on success, not on every keystroke: a failed attempt should
-      // leave what was typed in place rather than making the reviewer retype
-      // their reasoning after a transient error.
-      setNote("");
+      await (action === "approve" ? approveInvoice : rejectInvoice)(invoiceId, note);
+      // Closes rather than staying open on the now-decided invoice. Leaving it
+      // open kept Approve/Reject live with nothing to stop a second click --
+      // which is how the same invoice ended up with several identical entries
+      // in the decision history. The invoice itself moves to History; there is
+      // nothing left to do here.
+      onBack?.();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Something went wrong");
     } finally {

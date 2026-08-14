@@ -92,7 +92,13 @@ function Home() {
     );
   }
 
-  const hasInvoices = invoices !== null && invoices.length > 0;
+  // Once a person has approved or rejected an invoice, it belongs in History,
+  // not here -- otherwise a decided invoice keeps sitting in the queue that is
+  // supposed to be "what still needs you", indistinguishable from one nobody
+  // has looked at yet. Still-running and still-pending reviews stay: only a
+  // human decision moves status off "pending".
+  const openInvoices = (invoices ?? []).filter((invoice) => invoice.status === "pending");
+  const hasInvoices = openInvoices.length > 0;
 
   return (
     <main className={hasInvoices ? "home-queue" : "home-idle"}>
@@ -127,7 +133,7 @@ function Home() {
               </tr>
             </thead>
             <tbody>
-              {invoices!.map((invoice) => (
+              {openInvoices.map((invoice) => (
                 <tr key={invoice.id} className={decisionRowClass(invoice.decision)}>
                   <td>
                     <button
