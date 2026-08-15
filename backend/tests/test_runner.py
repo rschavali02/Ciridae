@@ -67,6 +67,75 @@ async def test_calling_a_tool_records_it_on_the_transcript(db_session, seeded_ve
 
 
 @pytest.mark.asyncio
+async def test_resolving_a_vendor_writes_it_onto_the_invoice(
+    db_session, seeded_vendor, seeded_invoice
+):
+    """Nothing else sets `invoices.vendor_id`.
+
+    `apply_extraction` writes what the LLM reads off the page, but the page
+    carries a vendor name and the id has to be resolved. If this tool does not
+    record it, an uploaded invoice keeps vendor_id NULL permanently.
+    """
+    assert seeded_invoice.vendor_id is None
+
+    transcript = RunTranscript(invoice_id=seeded_invoice.id)
+    tools = {t.name: t for t in build_tools(db_session, transcript, seeded_invoice)}
+
+    await tools["lookup_vendor"].call({"vendor_name": "Acme Inc"})
+
+    assert seeded_invoice.vendor_id == seeded_vendor.id
+
+
+@pytest.mark.asyncio
+async def test_an_approved_upload_is_caught_when_it_is_resubmitted(db_session, seeded_vendor):
+    """The demo failure, end to end: the same invoice uploaded twice, approved
+    the first time, and not flagged the second.
+
+    Both checks that guard against paying twice filter on `vendor_id`, so an
+    approved invoice carrying NULL is invisible to them -- it is on file, it is
+    marked paid, and it still matches nothing. That fails open, and no eval case
+    covers it: `seed_case` sets `vendor_id` on the rows it inserts, so the suite
+    only ever tests a world where the column is already populated, which is
+    precisely the state a live upload never reaches on its own.
+    """
+    first = Invoice(
+        amount=9780.10, invoice_number="INV-1004", status="pending", raw_pdf_path="up.pdf"
+    )
+    db_session.add(first)
+    await db_session.commit()
+    await db_session.refresh(first)
+
+    # The agent resolves the payee, exactly as it does on a real upload.
+    first_tools = {
+        t.name: t for t in build_tools(db_session, RunTranscript(invoice_id=first.id), first)
+    }
+    await first_tools["lookup_vendor"].call({"vendor_name": "Acme Inc"})
+
+    # A human approves it -- "already paid" is what the duplicate check means.
+    first.status = "approved"
+    await db_session.commit()
+
+    second = Invoice(
+        amount=9780.10, invoice_number="INV-1004", status="pending", raw_pdf_path="up.pdf"
+    )
+    db_session.add(second)
+    await db_session.commit()
+    await db_session.refresh(second)
+
+    transcript = RunTranscript(invoice_id=second.id)
+    tools = {t.name: t for t in build_tools(db_session, transcript, second)}
+    await tools["check_duplicate_invoice"].call(
+        {
+            "vendor_id": str(seeded_vendor.id),
+            "amount": 9780.10,
+            "invoice_number": "INV-1004",
+        }
+    )
+
+    assert transcript.tool_calls[0]["output"]["match"] == "exact"
+
+
+@pytest.mark.asyncio
 async def test_duplicate_check_excludes_the_invoice_under_review(db_session, seeded_vendor):
     """The wrapper binds exclude_invoice_id. Without it the invoice matches
     itself and every clean invoice reports as a duplicate."""

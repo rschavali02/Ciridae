@@ -11,6 +11,7 @@ here rather than declared as a parameter.
 """
 
 import json
+import uuid
 from typing import Literal
 
 from anthropic import AsyncAnthropic, beta_async_tool
@@ -58,6 +59,29 @@ def build_tools(session: AsyncSession, transcript: RunTranscript, invoice: Invoi
             vendor_name: The vendor name exactly as printed on the invoice.
         """
         out = await tool_impls.lookup_vendor(session, vendor_name=vendor_name)
+
+        # Write the resolution onto the invoice, not just into the transcript.
+        #
+        # Nothing else ever sets `invoices.vendor_id`: `apply_extraction` writes
+        # every field the LLM reads off the page, but the page carries a vendor
+        # *name*, and turning that into an id is this tool's job. Left unwritten,
+        # an uploaded invoice keeps vendor_id NULL for good, and the two checks
+        # that filter on it stop seeing it -- `check_duplicate_invoice` cannot
+        # match a resubmission against a previously uploaded and approved copy,
+        # and an approved upload never joins the vendor's payment history for
+        # the next invoice to be compared against. Both fail open, silently.
+        #
+        # Only on `resolved`. A `drafted` match names a payee awaiting human
+        # approval, and pointing the invoice at it would quietly assert a link
+        # the approval control exists to withhold.
+        if out.get("match") == "resolved":
+            invoice.vendor_id = uuid.UUID(out["vendor_id"])
+            # Committed here rather than left to the transcript flush below:
+            # `_flush` returns without committing when the run has no row yet,
+            # so relying on it would make this write conditional on something
+            # unrelated to it.
+            await session.commit()
+
         await transcript.record_tool_call(
             "lookup_vendor", {"vendor_name": vendor_name}, out, session=session
         )
