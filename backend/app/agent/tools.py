@@ -306,7 +306,6 @@ async def check_duplicate_invoice(
 
     if not candidates:
         return {"match": "none", "detail": "No prior payment to this vendor resembles it."}
-
     def _is_exact(prior: Invoice) -> bool:
         return (
             invoice_number is not None
