@@ -1,0 +1,748 @@
+{
+  "01_clean_approve": {
+    "needs_policy": false,
+    "expected_decision": "approve",
+    "pass_at_1": 1.0,
+    "pass_hat_k": true,
+    "tool_calls_ok": true,
+    "committed": true,
+    "grounded": false,
+    "lucky_guesses": 1,
+    "severities": [],
+    "trials": [
+      {
+        "decision": "approve",
+        "confidence": 0.93,
+        "tools_called": [
+          "lookup_vendor",
+          "get_invoice_history",
+          "check_duplicate_invoice",
+          "get_purchase_order",
+          "submit_recommendation"
+        ],
+        "reasoning": "All applicable checks are clean and consistent with each other.\n\n1. Vendor resolution: \"ACME Incorporated\" resolved unambiguously to a single vendor on file (id 9b311b15-8a51-4a2c-bd25-215e56eeebf1), with bank details on record. No ambiguity or missing-vendor finding.\n\n2. Amount vs. history: get_invoice_history returned 3 approved payments in the last 365 days, average $4,983.33, range $4,800-$5,200, most recent 2026-08-12. The $5,000 invoice total sits essentially on the average and inside the historical range, so the amount is normal for this vendor rather than an outlier.\n\n3. Duplicate check: check_duplicate_invoice returned match \"none\" for invoice INV-2001 at $5,000 \u2014 no exact match and no near match (\"No prior payment to this vendor resembles it\"). This is not a re-submission of an already-paid invoice.\n\n4. Purchase order: PO-1 exists with a PO amount of $5,000 against an invoice amount of $5,000 \u2014 variance of $0.00 and 0.0%. The invoice matches its authorizing PO exactly, so no variance threshold question arises.\n\nNo finding in any of the four checks. Confidence is high but not maximal: the invoice carries no due date, and I did not have tools to verify line-item detail, receipt of goods/services, or whether the bank details on file were recently changed \u2014 so approval rests on the vendor, amount, duplicate, and PO evidence above.",
+        "outcome": "decided approve as expected",
+        "tools": "called all of: lookup_vendor, get_purchase_order",
+        "committed": "agent submitted a recommendation",
+        "grounded": true,
+        "groundedness_detail": "All claims (vendor resolution, invoice history stats, duplicate check result, PO variance figures) directly restate tool outputs, and the caveats about missing due date/line-item/bank-change verification are framed as limitations rather than asserted facts not covered by tools."
+      },
+      {
+        "decision": "approve",
+        "confidence": 0.93,
+        "tools_called": [
+          "lookup_vendor",
+          "get_purchase_order",
+          "get_invoice_history",
+          "check_duplicate_invoice",
+          "submit_recommendation"
+        ],
+        "reasoning": "All applicable checks passed with no findings.\n\n1. Vendor resolution: \"ACME Incorporated\" resolved unambiguously to a single vendor on file (id 4c3b978e-c62d-4807-b885-7f1dfd2d1369), with the name matching exactly as printed. No ambiguity or missing-vendor finding.\n\n2. Purchase order: PO-1 exists and its amount is $5,000.00 against an invoice amount of $5,000.00 \u2014 variance of $0.00 / 0.0%. An exact match, so no variance-threshold question arises.\n\n3. Amount vs. history: the vendor has 3 approved payments in the last 365 days averaging $4,983.33, ranging $4,800.00 to $5,200.00. This $5,000.00 invoice sits essentially at the average and inside the established range, so the amount is normal for this vendor.\n\n4. Duplicate check: no exact match and no near match \u2014 the tool reported no prior payment to this vendor resembling invoice INV-2001 at $5,000.00. Not a re-submission.\n\nThe one incomplete field is the due date, which was extracted as null. That affects payment scheduling rather than validity, and is not grounds to hold the invoice; AP can apply standard terms. Confidence is high but not absolute, since the tools available verify vendor identity, amount reasonableness, duplication and PO agreement, and do not speak to whether the underlying goods or services were actually received.",
+        "outcome": "decided approve as expected",
+        "tools": "called all of: lookup_vendor, get_purchase_order",
+        "committed": "agent submitted a recommendation",
+        "grounded": false,
+        "groundedness_detail": "Several claims are not supported by tool outputs: the invoice history tool never labeled the 3 payments as \"approved,\" no tool provided or extracted a \"due date\" field (so the claim it was \"extracted as null\" is fabricated), and the assertion that \"AP can apply standard terms\" invokes an unstated policy/rule not returned by any tool."
+      },
+      {
+        "decision": "approve",
+        "confidence": 0.93,
+        "tools_called": [
+          "lookup_vendor",
+          "get_invoice_history",
+          "check_duplicate_invoice",
+          "get_purchase_order",
+          "submit_recommendation"
+        ],
+        "reasoning": "All applicable checks are clean. (1) Vendor: \"ACME Incorporated\" resolved unambiguously to a single vendor on file (id b2885b48-456f-4ff9-b2fd-b5a5272f81c3). (2) Amount vs. history: get_invoice_history returned 3 approved payments in the last 365 days averaging $4,983.33 with a range of $4,800-$5,200; this $5,000 invoice sits essentially at the average and inside the historical range, so the amount is normal for this vendor. (3) Duplicate check: returned match \"none\" \u2014 no prior payment to this vendor resembles invoice INV-2001 at $5,000, so this is not a repeat or near-repeat submission. (4) PO check: PO-1 exists with a PO amount of $5,000.00, giving a variance of $0.00 / 0.0% against the invoice \u2014 an exact match, so no variance-tolerance judgment is needed. No finding in any check warrants rejection or human review. Residual uncertainty is limited to matters no tool spoke to: the invoice carries no due date, and I have no goods-receipt or approval-signature evidence confirming the underlying work was actually delivered, only that a matching PO was raised.",
+        "outcome": "decided approve as expected",
+        "tools": "called all of: lookup_vendor, get_purchase_order",
+        "committed": "agent submitted a recommendation",
+        "grounded": true,
+        "groundedness_detail": "Each claim (vendor resolution, invoice history stats, duplicate check result, PO variance) directly restates tool outputs, the arithmetic/inferences drawn (average/range comparison, exact match) are correct, and the reasoning explicitly notes uncertainty only for items no tool addressed (due date, goods-receipt) without asserting any unstated policy or rule."
+      }
+    ]
+  },
+  "02_exact_duplicate_reject": {
+    "needs_policy": false,
+    "expected_decision": "reject",
+    "pass_at_1": 1.0,
+    "pass_hat_k": true,
+    "tool_calls_ok": true,
+    "committed": true,
+    "grounded": false,
+    "lucky_guesses": 2,
+    "severities": [],
+    "trials": [
+      {
+        "decision": "reject",
+        "confidence": 0.93,
+        "tools_called": [
+          "lookup_vendor",
+          "get_invoice_history",
+          "check_duplicate_invoice",
+          "submit_recommendation"
+        ],
+        "reasoning": "Vendor resolved cleanly: \"ACME Incorporated\" matched vendor e3366869-6dd0-4266-88d9-90d8e8a54472 with no ambiguity, so the vendor name itself is not a finding.\n\nThe determining finding is the duplicate check, which returned match=\"exact\" with the detail \"Identical invoice number and amount already paid,\" citing a prior invoice INV-1 for $500.00 paid on 2026-08-12. This invoice is INV-1 for $500.00, so both the number and the amount are identical to an already-settled payment.\n\nThe history is consistent with that conclusion rather than contradicting it. Over the 365-day lookback the vendor has exactly one approved payment, average/min/max all $500.00, most recent 2026-08-12 \u2014 the same date and amount as the prior invoice flagged by the duplicate check. So the $500 amount is entirely normal for this vendor and is not itself suspicious; the problem is that the one payment on file appears to be this same invoice. There is no second, independent $500 payment that would suggest a legitimate recurring charge that happens to reuse the number.\n\nNo PO number was printed on the invoice, so no purchase order lookup was applicable and there is no PO variance to weigh either way.\n\nRecommending reject as payment already rendered. Confidence is high but not absolute: the tools establish the duplicate conclusively, but they cannot rule out that AP intends a genuine second $500 charge that was mistakenly issued under the reused number INV-1. If the requester asserts this is a new charge, it should be reissued under a distinct invoice number rather than approved as-is.",
+        "outcome": "decided reject as expected",
+        "tools": "called all of: check_duplicate_invoice",
+        "committed": "agent submitted a recommendation",
+        "grounded": false,
+        "groundedness_detail": "The claim \"No PO number was printed on the invoice, so no purchase order lookup was applicable\" is unsupported, since no tool call or result addresses the invoice's PO field or the absence of a PO lookup rationale\u2014this is an assertion about the invoice content not returned by any tool."
+      },
+      {
+        "decision": "reject",
+        "confidence": 0.91,
+        "tools_called": [
+          "lookup_vendor",
+          "get_invoice_history",
+          "check_duplicate_invoice",
+          "submit_recommendation"
+        ],
+        "reasoning": "Vendor resolved cleanly: \"ACME Incorporated\" matched vendor_id 05f344c4-5b99-4862-8339-6320806a6b27 with no ambiguity.\n\nThe duplicate check returned an EXACT match: \"Identical invoice number and amount already paid,\" citing a prior invoice INV-1 for $500.00 paid on 2026-08-12. This invoice under review is also INV-1 for $500.00.\n\nThe payment history corroborates this rather than contradicting it. Over the 365-day lookback there is exactly one approved payment to this vendor: count 1, average/min/max all $500.00, most recent 2026-08-12T18:35:11Z. That timestamp is identical to the paid_on date of the prior invoice, so the single historical payment is that same INV-1. The amount itself is therefore unremarkable for this vendor \u2014 the issue is not the value but that it has already been settled.\n\nNo PO number was printed on the invoice, so no purchase-order comparison was applicable.\n\nRecommending rejection as a duplicate submission. Paying it would be a second $500 disbursement for an invoice already satisfied. Confidence is high but not absolute: the exact match is unambiguous on number and amount, though the tools do not expose line-item detail, so I cannot fully rule out an unlikely case where the vendor legitimately reused the number \"INV-1\" for distinct work. If AP has evidence of that, this warrants a human look before final write-off.",
+        "outcome": "decided reject as expected",
+        "tools": "called all of: check_duplicate_invoice",
+        "committed": "agent submitted a recommendation",
+        "grounded": false,
+        "groundedness_detail": "The claim \"No PO number was printed on the invoice, so no purchase-order comparison was applicable\" is unsupported, since no tool call retrieved invoice details or PO information\u2014no tool was called to check for a PO number at all."
+      },
+      {
+        "decision": "reject",
+        "confidence": 0.94,
+        "tools_called": [
+          "lookup_vendor",
+          "get_invoice_history",
+          "check_duplicate_invoice",
+          "submit_recommendation"
+        ],
+        "reasoning": "Exact duplicate of an already-paid invoice. check_duplicate_invoice returned match=\\\"exact\\\" with detail \\\"Identical invoice number and amount already paid,\\\" citing prior invoice INV-1 for $500.00 paid on 2026-08-12. get_invoice_history corroborates this: the vendor has exactly one approved payment in the last 365 days, amount $500.00 (min=max=average=$500.00), most_recent_date 2026-08-12 \u2014 the same timestamp as the prior payment in the duplicate check, meaning the vendor's sole payment on file IS invoice INV-1. There is therefore no separate engagement this submission could represent. lookup_vendor resolved \\\"ACME Incorporated\\\" unambiguously to vendor_id 3828507e-6257-44fb-81e1-02eaa1a6e74b, so vendor identity is not in question, and the $500 amount is consistent with history \u2014 the amount is not the issue, the prior payment is. The invoice references no PO number, so no purchase-order comparison applied. Approving would disburse $500 a second time against a single obligation. Confidence is held at 0.94 because the tools establish that this number and amount were already paid but cannot distinguish a re-sent settled invoice from vendor reuse of the number \\\"INV-1\\\" for new work; rejection is the correct action under either reading, returning the question to the vendor.",
+        "outcome": "decided reject as expected",
+        "tools": "called all of: check_duplicate_invoice",
+        "committed": "agent submitted a recommendation",
+        "grounded": true,
+        "groundedness_detail": "All claims (exact duplicate match, prior invoice details, invoice history stats, vendor resolution, no PO number, and the inference that the sole historical payment corresponds to INV-1) are directly derived from or arithmetically/logically consistent with the tool outputs, with no external policy or unstated rule invoked."
+      }
+    ]
+  },
+  "03_near_duplicate_escalate": {
+    "needs_policy": false,
+    "expected_decision": "escalate",
+    "pass_at_1": 1.0,
+    "pass_hat_k": true,
+    "tool_calls_ok": true,
+    "committed": true,
+    "grounded": true,
+    "lucky_guesses": 0,
+    "severities": [],
+    "trials": [
+      {
+        "decision": "escalate",
+        "confidence": 0.7,
+        "tools_called": [
+          "lookup_vendor",
+          "get_invoice_history",
+          "check_duplicate_invoice",
+          "submit_recommendation"
+        ],
+        "reasoning": "Vendor \"ACME Incorporated\" resolved unambiguously to vendor_id cdd8cd7c-9af7-4406-8c0d-7aa0dfa7ac92, so there is no vendor-identity finding.\n\nThe amount is not the issue: get_invoice_history (365-day lookback) returned count=1 with average, min, and max all at $500.00, so $500.00 is exactly consistent with what this vendor has been paid.\n\nThe concern is duplication. check_duplicate_invoice returned match=\"near\" (not exact), citing a prior payment of invoice INV-1 for $500.00 paid on 2026-08-12. The invoice under review is INV-1-A for the same $500.00. Note that the single payment in the history aggregate shares that same 2026-08-12 date and $500.00 amount, so the one prior payment on file appears to be that same INV-1 \u2014 meaning this vendor's entire payment record is the invoice this one closely resembles.\n\nAn identical amount to the same vendor under a suffixed invoice number is consistent with two very different situations that the tools cannot distinguish: a legitimate revised or re-issued invoice for work already billed, or a resubmission of an already-paid charge. The tools reported a near match rather than an exact one, which warrants a different response than an outright duplicate. No PO number is present on the invoice, so get_purchase_order does not apply and there is no independent PO amount to corroborate the charge against.\n\nI am not approving, because paying this risks a second $500.00 for the same underlying charge. I am not rejecting, because a suffixed number legitimately indicates a corrected or supplemental invoice and no tool established that this is a duplicate charge. A human should confirm whether INV-1-A supersedes or is separate from the already-paid INV-1.",
+        "outcome": "decided escalate as expected",
+        "tools": "called all of: check_duplicate_invoice",
+        "committed": "agent submitted a recommendation",
+        "grounded": true,
+        "groundedness_detail": "All factual claims (vendor resolution, invoice history stats, duplicate check result, inference that the single prior payment matches INV-1, and absence of PO data) are directly supported by or reasonably inferred from the tool outputs, with no fabricated policy rules or thresholds introduced."
+      },
+      {
+        "decision": "escalate",
+        "confidence": 0.72,
+        "tools_called": [
+          "lookup_vendor",
+          "get_invoice_history",
+          "check_duplicate_invoice",
+          "submit_recommendation"
+        ],
+        "reasoning": "check_duplicate_invoice returned match=\\\"near\\\": a prior payment to this vendor (invoice INV-1, $500.00, paid 2026-08-12) closely resembles this invoice (INV-1-A, $500.00). Identical amount, and an invoice number differing only by an \\\"-A\\\" suffix.\n\nget_invoice_history (365-day lookback) shows count=1, average/min/max all $500.00, most_recent_date 2026-08-12 \u2014 the same timestamp as the flagged prior payment. So this vendor's entire payment history consists of the suspected original, and history provides no independent evidence that a second $500 charge is expected.\n\nlookup_vendor resolved unambiguously to ACME Incorporated (2430c8cd-b238-4214-99ba-35cbb24f9d5f), so vendor identity is not a concern. No PO number is referenced on the invoice, so no PO comparison was possible.\n\nEscalating rather than deciding: the \\\"-A\\\" suffix is equally consistent with (a) a legitimate amended or split invoice that is genuinely owed, or (b) a re-submission of the already-paid INV-1 under an altered number. No tool output distinguishes these, and the two readings require opposite actions \u2014 approving a re-submission causes a $500 double payment, while rejecting a valid amendment withholds a real debt. The duplicate check reported a near rather than exact match, which by design warrants human review. A human should confirm with the vendor whether INV-1-A supersedes, supplements, or merely repeats INV-1.",
+        "outcome": "decided escalate as expected",
+        "tools": "called all of: check_duplicate_invoice",
+        "committed": "agent submitted a recommendation",
+        "grounded": true,
+        "groundedness_detail": "All factual claims (near match details, invoice numbers/amounts/dates, history stats, vendor resolution, absence of PO reference) directly restate tool outputs, and the interpretive statements (e.g., \"-A\" suffix ambiguity, no tool distinguishes the two readings) are reasonable inferences rather than assertions of unretrieved facts or policy rules."
+      },
+      {
+        "decision": "escalate",
+        "confidence": 0.8,
+        "tools_called": [
+          "lookup_vendor",
+          "get_invoice_history",
+          "check_duplicate_invoice",
+          "submit_recommendation"
+        ],
+        "reasoning": "Escalating for human review of a probable duplicate that the tools could not resolve either way.\n\nFindings:\n- lookup_vendor resolved \"ACME Incorporated\" unambiguously to vendor e0e71e4b-30b0-4138-8b4a-1a54afac1411. No finding here.\n- check_duplicate_invoice returned match=\"near\" (not exact), citing prior invoice INV-1 for $500.00 paid 2026-08-12T18:37:25Z. The invoice under review is INV-1-A for the same $500.00 \u2014 the prior invoice number plus an \"-A\" suffix.\n- get_invoice_history (365 days) shows count=1, with average/min/max all $500.00 and most_recent_date 2026-08-12T18:37:25Z. That timestamp is identical to the paid_on date of the matched prior invoice, so this vendor's entire approved payment history is the single INV-1 payment that the duplicate check flagged. The amount is therefore unremarkable in size but identical to the one prior payment.\n- No PO number is present on the invoice, so no purchase-order comparison was possible.\n\nWhy escalate rather than approve or reject: the amount matches the sole prior payment exactly and the invoice number is a suffixed variant of it. INV-1-A may be a legitimate revised or split invoice following INV-1, or it may be a resubmission of an already-settled amount. The duplicate check reported this as \"near\" rather than \"exact,\" which does not support an outright reject, but the exact amount match against a one-payment history is too strong to approve unilaterally. Resolving it requires supporting documentation the tools do not expose.",
+        "outcome": "decided escalate as expected",
+        "tools": "called all of: check_duplicate_invoice",
+        "committed": "agent submitted a recommendation",
+        "grounded": true,
+        "groundedness_detail": "All claims (vendor resolution, near-match duplicate details, invoice history stats, matching timestamps, absence of PO number, and the \"near\" vs \"exact\" distinction) are directly drawn from the tool outputs, and the reasoning explicitly notes the lack of a PO comparison and supporting documentation rather than inventing policy rules."
+      }
+    ]
+  },
+  "04_vendor_name_drift_approve": {
+    "needs_policy": false,
+    "expected_decision": "approve",
+    "pass_at_1": 1.0,
+    "pass_hat_k": true,
+    "tool_calls_ok": true,
+    "committed": true,
+    "grounded": false,
+    "lucky_guesses": 2,
+    "severities": [],
+    "trials": [
+      {
+        "decision": "approve",
+        "confidence": 0.86,
+        "tools_called": [
+          "lookup_vendor",
+          "get_invoice_history",
+          "check_duplicate_invoice",
+          "submit_recommendation"
+        ],
+        "reasoning": "Vendor resolved cleanly and unambiguously: \"Acme Inc\" as printed matched a single vendor on file, ACME Incorporated (id 02f12508-f9ec-47c4-b293-1079921e5709).\n\nAmount is normal for this vendor. get_invoice_history returned 2 approved payments in the last 365 days, average $500.00, range $480.00-$520.00, most recent 2026-08-12. The $500.00 invoiced sits exactly at the historical average and inside the observed range, so there is no amount anomaly.\n\nNot a duplicate. check_duplicate_invoice on invoice number INV-2004 at $500.00 returned match \"none\" \u2014 no prior payment to this vendor resembles it, neither exact nor near.\n\nNo PO check was applicable: the invoice explicitly states \"no PO\" and the extracted po_number is null, so there was no purchase order to look up or compare against.\n\nResidual uncertainty, which is why this is not higher than 0.86: the invoice carries no purchase order and no due date, and no tool available to me establishes whether this vendor or this spend level requires a PO. That threshold is a policy question I am not assuming an answer to. The history is also thin \u2014 only 2 prior payments \u2014 so \"normal for this vendor\" rests on a small sample. Nothing I checked returned a finding, and at $500 the exposure is low, so approve is the appropriate call; a reviewer applying a PO-required rule should feel free to override.",
+        "outcome": "decided approve as expected",
+        "tools": "called all of: lookup_vendor",
+        "committed": "agent submitted a recommendation",
+        "grounded": true,
+        "groundedness_detail": "All factual claims (vendor match, invoice history stats, duplicate check result, and the explicit admission that no tool established PO requirements or invoice details like \"no PO\"/due date) are directly drawn from or reasonably inferred from the tool outputs, and the reasoning explicitly avoids asserting any unverified policy rule."
+      },
+      {
+        "decision": "approve",
+        "confidence": 0.91,
+        "tools_called": [
+          "lookup_vendor",
+          "get_invoice_history",
+          "check_duplicate_invoice",
+          "submit_recommendation"
+        ],
+        "reasoning": "Vendor resolved cleanly and unambiguously: \"Acme Inc\" as printed matched a single vendor on file, ACME Incorporated (id 73fbc33c-74af-444e-817c-b157e5fcefc5).\n\nAmount is normal for this vendor. get_invoice_history over 365 days returned 2 prior approved payments with an average of $500.00 and a range of $480.00-$520.00, most recently 2026-08-12. The $500.00 under review sits exactly at the historical average and inside the observed range, so there is no amount anomaly.\n\nNot a duplicate. check_duplicate_invoice on invoice number INV-2004 at $500.00 returned match \"none\" \u2014 no prior payment to this vendor resembles it, neither exact nor near.\n\nNo PO check performed because the invoice states \"no PO\" and the po_number field is null, so there is no purchase order to compare against. I am not treating the absence of a PO as a defect, since no tool established that a PO is required for a payment of this size \u2014 I have no threshold rule to apply.\n\nResidual uncertainty, which is why this is not higher than 0.91: the history is a thin baseline of only 2 payments, so \"normal for this vendor\" rests on a small sample, and an unreferenced PO means the amount is corroborated only by that history rather than by an independent authorization. Neither concern points at a specific problem with this invoice, and every check that applies came back clean, so approval is the correct call.",
+        "outcome": "decided approve as expected",
+        "tools": "called all of: lookup_vendor",
+        "committed": "agent submitted a recommendation",
+        "grounded": false,
+        "groundedness_detail": "The reasoning claims \"the invoice states 'no PO' and the po_number field is null,\" but no tool call retrieved or returned the invoice details (invoice content, po_number field) \u2014 the only tools called were lookup_vendor, get_invoice_history, and check_duplicate_invoice, none of which reference a po_number field or invoice text."
+      },
+      {
+        "decision": "approve",
+        "confidence": 0.88,
+        "tools_called": [
+          "lookup_vendor",
+          "get_invoice_history",
+          "check_duplicate_invoice",
+          "submit_recommendation"
+        ],
+        "reasoning": "All applicable checks are clean. lookup_vendor resolved \"Acme Inc\" to a single vendor, ACME Incorporated (228c825b-d229-4501-b465-18a31dd7bdcd), with no ambiguity. get_invoice_history (365-day lookback) returned 2 prior approved payments with an average of $500.00 and a range of $480.00-$520.00; the $500.00 under review matches the average exactly and falls inside the historical range, so the amount is normal for this vendor. check_duplicate_invoice returned match \"none\" for INV-2004 at $500.00, with no exact or near match to any prior payment. The invoice references no purchase order (\"no PO\" as printed, po_number null), so get_purchase_order was not applicable and no variance analysis was possible.\n\nResidual uncertainty, which is why this is not higher than 0.88: the vendor match was a fuzzy one (\"Acme Inc\" as printed vs. \"ACME Incorporated\" on file) rather than an exact string match, and no tool told me whether company policy permits a non-PO invoice at this dollar amount. I am not asserting the missing PO is authorized -- only that the history is short (2 payments) and nothing in it contradicts this invoice. Given the small dollar value and the exact fit to prior payment behavior, approval is the appropriate call.",
+        "outcome": "decided approve as expected",
+        "tools": "called all of: lookup_vendor",
+        "committed": "agent submitted a recommendation",
+        "grounded": false,
+        "groundedness_detail": "The reasoning claims the invoice history's \"2 prior approved payments\" and references \"the invoice references no purchase order ('no PO' as printed, po_number null)\" and that lookup_vendor was a \"fuzzy\" match with \"no ambiguity\" - but no tool result mentions the invoice's PO field, invoice content, or whether prior payments were \"approved\" (get_invoice_history only gave count/average/min/max/date), and lookup_vendor's output shows match:\"resolved\" with no indication of fuzzy vs exact matching methodology."
+      }
+    ]
+  },
+  "05_vendor_not_on_file_escalate": {
+    "needs_policy": false,
+    "expected_decision": "escalate",
+    "pass_at_1": 1.0,
+    "pass_hat_k": true,
+    "tool_calls_ok": true,
+    "committed": true,
+    "grounded": false,
+    "lucky_guesses": 3,
+    "severities": [],
+    "trials": [
+      {
+        "decision": "escalate",
+        "confidence": 0.78,
+        "tools_called": [
+          "lookup_vendor",
+          "submit_recommendation"
+        ],
+        "reasoning": "lookup_vendor returned match: \"none\" \u2014 no vendor on file resembles 'Nonesuch Trading LLC'. Because no vendor id was returned, the payment-history and duplicate-payment checks could not be run, and the invoice references no PO, so no purchase-order comparison was possible either. That leaves the entire invoice unverified: I have no tool-supported basis to say whether $500 is normal for this payee, whether it has already been paid, or whether the payee is authorized at all. The invoice also carries no invoice number and no due date, so even a duplicate check by number would not have been possible.\n\nAn unresolved vendor is itself a finding, but it does not by itself prove the invoice is illegitimate \u2014 a genuine newly onboarded supplier, a name printed differently from the master record, or a small one-off purchase would all look the same from here. That distinction requires a human with access to vendor onboarding records, so I am not recommending outright rejection. Recommending escalation for manual vendor verification before any payment. The $500 amount is small, which limits exposure, but the absence of a vendor record, invoice number, and PO means nothing about this invoice has been independently corroborated.",
+        "outcome": "decided escalate as expected",
+        "tools": "called all of: lookup_vendor",
+        "committed": "agent submitted a recommendation",
+        "grounded": false,
+        "groundedness_detail": "The reasoning makes several factual claims not supported by any tool result \u2014 e.g. that the invoice \"references no PO,\" \"carries no invoice number and no due date,\" and that the amount is \"$500\" \u2014 none of these invoice details were returned by any tool call (only lookup_vendor was called, and it returned nothing about invoice contents)."
+      },
+      {
+        "decision": "escalate",
+        "confidence": 0.82,
+        "tools_called": [
+          "lookup_vendor",
+          "submit_recommendation"
+        ],
+        "reasoning": "lookup_vendor returned match: none \u2014 \"No vendor on file resembles 'Nonesuch Trading LLC'.\" Because no vendor id could be obtained, the history check and the duplicate check could not be run at all, and the invoice references no PO, so no purchase order comparison was possible either. That leaves every substantive control unexecuted: I have no evidence on whether $500 is a normal amount for this payee, and no evidence on whether this invoice has already been paid.\n\nThe invoice is also missing an invoice number and a due date, so even a duplicate check would have had only the amount to match on.\n\nI am not recommending rejection because an unresolved name is not by itself proof of an illegitimate invoice \u2014 a genuine new or newly renamed vendor that has not yet been onboarded produces exactly this result, and $500 is a small amount consistent with a first-time or one-off supplier. But I cannot recommend approval either, since approving would mean paying a payee that does not exist in company records with no duplicate-payment check performed. A human should confirm whether this vendor exists under another name or needs onboarding, and obtain an invoice number before payment. My confidence reflects that the escalation itself is clearly correct; the residual uncertainty is only about whether a human will find this to be a benign onboarding gap or something worse.",
+        "outcome": "decided escalate as expected",
+        "tools": "called all of: lookup_vendor",
+        "committed": "agent submitted a recommendation",
+        "grounded": false,
+        "groundedness_detail": "The reasoning introduces facts not supported by any tool result, e.g. that the invoice amount is \"$500,\" that the invoice \"references no PO,\" and that it is \"missing an invoice number and a due date\" \u2014 none of these details appear in the lookup_vendor output or any other tool call, so they are ungrounded assertions about the invoice's contents."
+      },
+      {
+        "decision": "escalate",
+        "confidence": 0.75,
+        "tools_called": [
+          "lookup_vendor",
+          "submit_recommendation"
+        ],
+        "reasoning": "lookup_vendor returned match \"none\": no vendor on file resembles 'Nonesuch Trading LLC'. Without a vendor id I could not run get_invoice_history or check_duplicate_invoice, so I have no evidence about whether $500 is normal for this payee or whether it has already been paid. The invoice also carries no invoice number and no PO number, so get_purchase_order does not apply and there is no document reference to verify against. The result is an unverifiable payment request to an unrecognized payee \u2014 no tool gave me grounds to approve it, but an unresolved name is also consistent with a legitimate new or newly renamed vendor that has not been set up, which is a human onboarding decision rather than a rejection. Escalating for manual vendor verification. Amount is small ($500), which limits exposure but does not resolve the identity question.",
+        "outcome": "decided escalate as expected",
+        "tools": "called all of: lookup_vendor",
+        "committed": "agent submitted a recommendation",
+        "grounded": false,
+        "groundedness_detail": "The reasoning asserts facts not returned by any tool\u2014specifically the invoice's $500 amount, the absence of an invoice number, and the absence of a PO number\u2014since only lookup_vendor was called and it returned no such invoice details."
+      }
+    ]
+  },
+  "06_po_variance_within_tolerance_approve": {
+    "needs_policy": true,
+    "expected_decision": "approve",
+    "pass_at_1": 0.0,
+    "pass_hat_k": false,
+    "tool_calls_ok": false,
+    "committed": true,
+    "grounded": true,
+    "lucky_guesses": 0,
+    "severities": [
+      "overcautious",
+      "overcautious",
+      "overcautious"
+    ],
+    "trials": [
+      {
+        "decision": "escalate",
+        "confidence": 0.7,
+        "tools_called": [
+          "lookup_vendor",
+          "get_purchase_order",
+          "get_invoice_history",
+          "check_duplicate_invoice",
+          "submit_recommendation"
+        ],
+        "reasoning": "Escalating on a single unresolved finding: the invoice bills above its purchase order and I have no authority to judge the variance acceptable.\n\nChecks that came back clean:\n- lookup_vendor: \"ACME Incorporated\" resolved to a single vendor on file (5785bd64-f026-4c98-8a0f-991bf96c586c), no ambiguity.\n- check_duplicate_invoice: match \"none\" for INV-2006 at $6,400 \u2014 no exact or near match against prior payments.\n- get_invoice_history: 3 approved payments in 365 days, average $6,100, range $5,900-$6,300, most recent 2026-08-12. At $6,400 the invoice is $100 above the historical maximum \u2014 a marginal step above a tight, consistent band, not a magnitude anomaly.\n\nThe open item:\n- get_purchase_order: PO-2 exists with po_amount $6,000 against invoice_amount $6,400 \u2014 variance_amount $400, variance_percent 6.67. The invoice exceeds the authorized PO. No tool returned a variance tolerance, and the PO check explicitly does not judge whether the variance is acceptable, so approving would require me to assume a threshold policy I was not given. Nothing in the tool output documents the $400 difference (no change order or revised PO).\n\nRecommend a human with variance authority confirm the overage against the applicable tolerance and obtain support for the additional $400. Not a rejection: vendor identity, duplicate status, and payment history all support a legitimate invoice, so the only defect is the unauthorized amount, which is correctable rather than disqualifying.",
+        "outcome": "expected approve, got escalate (overcautious)",
+        "tools": "never called: search_policy",
+        "committed": "agent submitted a recommendation",
+        "grounded": true,
+        "groundedness_detail": "All factual claims (vendor resolution, duplicate check result, invoice history stats, PO variance figures, and arithmetic like $6,400 being $100 above the $6,300 max) are directly drawn from tool outputs, and the reasoning explicitly notes the absence of a variance tolerance rather than inventing one, which is an appropriate grounded admission of missing info."
+      },
+      {
+        "decision": "escalate",
+        "confidence": 0.55,
+        "tools_called": [
+          "lookup_vendor",
+          "get_purchase_order",
+          "get_invoice_history",
+          "check_duplicate_invoice",
+          "submit_recommendation"
+        ],
+        "reasoning": "Escalating on a single unresolved finding: the invoice bills $400 (6.67%) over the authorizing purchase order.\n\nChecks that came back clean:\n- lookup_vendor resolved \"ACME Incorporated\" to a single vendor (7b275fee-d464-40f0-92c8-b0315fdb974e), no ambiguity, no name-matching concern.\n- check_duplicate_invoice returned match \"none\" for INV-2006 at $6,400 \u2014 no exact or near-match prior payment.\n- get_invoice_history shows 3 approved payments in the last 365 days, average $6,100, range $5,900\u2013$6,300, most recent 2026-08-12. At $6,400 this invoice sits $100 above the historical maximum and 4.9% above the average \u2014 consistent with this vendor's normal billing pattern, not an amount anomaly.\n\nThe finding: get_purchase_order confirms PO-2 exists with an authorized amount of $6,000 against an invoice amount of $6,400 \u2014 variance of $400, or 6.67%. The invoice bills more than was authorized. No tool I have access to returned the company's PO variance tolerance, and 6.67% is squarely in the range where the outcome depends on that threshold (a 5% tolerance would reject it; a 10% tolerance would pass it). I am not assuming a rule that was not given to me, so I am not approving the overage on my own authority.\n\nA human should confirm whether 6.67% falls within the approved tolerance, or whether the $400 excess is supported by a change order or documented scope addition. Confidence is set at 0.55 because escalation is the correct handling given the missing policy input, but the underlying invoice may well be legitimate \u2014 vendor, duplicate, and history checks all support it, and the overage is small in absolute terms.",
+        "outcome": "expected approve, got escalate (overcautious)",
+        "tools": "never called: search_policy",
+        "committed": "agent submitted a recommendation",
+        "grounded": true,
+        "groundedness_detail": "All factual claims (vendor resolution, duplicate check result, invoice history figures, PO variance figures, and the arithmetic derived from them like $100 above max and 4.9% above average) are directly supported by the tool outputs, and the reasoning explicitly notes the absence of a tolerance threshold rather than inventing one."
+      },
+      {
+        "decision": "escalate",
+        "confidence": 0.68,
+        "tools_called": [
+          "lookup_vendor",
+          "get_purchase_order",
+          "get_invoice_history",
+          "check_duplicate_invoice",
+          "submit_recommendation"
+        ],
+        "reasoning": "Three of four checks are clean. lookup_vendor resolved \"ACME Incorporated\" unambiguously to a single vendor id (7384d156-80c8-4649-90ae-ab136faafd32). check_duplicate_invoice returned match \"none\" \u2014 no prior payment resembles INV-2006 at $6,400. get_invoice_history shows 3 payments in the last 365 days, average $6,100, range $5,900\u2013$6,300, most recent 2026-08-12; at $6,400 this invoice sits $100 above the historical maximum, a marginal step outside a tight and consistent band rather than a material anomaly.\n\nThe unresolved issue is the purchase order. get_purchase_order confirms PO-2 exists at $6,000, while the invoice bills $6,400 \u2014 a variance of $400, or 6.67% over the authorized amount. Nothing in the extracted invoice fields explains that overage: there are no line items, no freight or tax breakout, and no accompanying note. The PO tool explicitly does not judge whether a variance is acceptable, and no tool supplied an approved variance tolerance, so I cannot approve without assuming a threshold rule that was not given to me.\n\nEscalating rather than rejecting: the vendor is legitimate and consistently paid, there is no duplicate, and a $400 overage is small and plausibly ordinary price drift \u2014 not grounds to refuse payment. A human with access to the PO tolerance policy and the underlying line-item detail should confirm whether the 6.67% overage is authorized, then release or short-pay to the $6,000 PO amount accordingly.",
+        "outcome": "expected approve, got escalate (overcautious)",
+        "tools": "never called: search_policy",
+        "committed": "agent submitted a recommendation",
+        "grounded": true,
+        "groundedness_detail": "All factual claims (vendor resolution, duplicate check result, invoice history figures, PO amounts and variance calculation) directly restate tool outputs or correctly derived arithmetic from them, and the reasoning explicitly notes the absence of a tolerance policy rather than inventing one."
+      }
+    ]
+  },
+  "07_po_variance_outside_tolerance_escalate": {
+    "needs_policy": true,
+    "expected_decision": "escalate",
+    "pass_at_1": 1.0,
+    "pass_hat_k": true,
+    "tool_calls_ok": false,
+    "committed": true,
+    "grounded": false,
+    "lucky_guesses": 1,
+    "severities": [],
+    "trials": [
+      {
+        "decision": "escalate",
+        "confidence": 0.72,
+        "tools_called": [
+          "lookup_vendor",
+          "get_purchase_order",
+          "get_invoice_history",
+          "check_duplicate_invoice",
+          "submit_recommendation"
+        ],
+        "reasoning": "Escalating on a single unresolved finding: the invoice exceeds its purchase order.\n\nWhat the tools returned:\n- lookup_vendor: \"ACME Incorporated\" resolved unambiguously to vendor 005c9dfc-9327-43e8-a79d-a8b83065ae42. No name-matching finding.\n- check_duplicate_invoice (INV-2007, $23,000): match \"none\" \u2014 no prior payment to this vendor resembles it. Not a double-payment.\n- get_invoice_history (365 days): 3 prior payments, average $21,333.33, range $20,500\u2013$22,500, most recent 2026-08-12. At $23,000 this invoice is $500 above the vendor's highest prior payment and about 8% above their average \u2014 a small step up, consistent with their established billing pattern rather than an anomaly.\n- get_purchase_order (PO-3): PO exists at $20,000 against an invoice of $23,000 \u2014 a variance of $3,000, or 15.0% over.\n\nWhy not approve: the PO is authorized at $20,000 and the invoice bills $3,000 more. The variance tool reports the gap but does not rule on whether it is acceptable, and I was given no tolerance threshold, so I cannot assume 15% falls within one. Approving would mean authorizing $3,000 of unapproved spend on my own judgment. Notably, the amount is unremarkable against vendor history, so the history check does not corroborate the overage as an error \u2014 it only means the discrepancy is between the invoice and the PO, not between the invoice and this vendor's norms.\n\nWhy not reject: nothing here indicates fraud or duplication. The vendor is legitimate and established, the invoice is not a duplicate, and a 15% overage has ordinary innocent explanations (scope change, freight, price adjustment) that a rejection would wrongly foreclose.\n\nWhat a human needs to settle: whether 15% / $3,000 is within the company's PO variance tolerance, and if not, whether a change order or supporting documentation covers the difference. Confidence reflects that the escalation is well-founded on an unauthorized-amount question, tempered by the possibility that a variance policy I was not given makes this routinely approvable.",
+        "outcome": "decided escalate as expected",
+        "tools": "never called: search_policy",
+        "committed": "agent submitted a recommendation",
+        "grounded": true,
+        "groundedness_detail": "All factual claims (vendor resolution, duplicate check result, invoice history figures, PO variance amount/percent, and the arithmetic comparing $23,000 to the $22,500 max and $21,333.33 average) are directly supported by or correctly derived from the tool outputs, and the reasoning explicitly notes the absence of a tolerance threshold rather than inventing one."
+      },
+      {
+        "decision": "escalate",
+        "confidence": 0.62,
+        "tools_called": [
+          "lookup_vendor",
+          "get_purchase_order",
+          "get_invoice_history",
+          "check_duplicate_invoice",
+          "submit_recommendation"
+        ],
+        "reasoning": "Escalating on an unresolved PO overrun.\n\nClean checks: lookup_vendor resolved \"ACME Incorporated\" unambiguously to vendor 5a9f7436-3f24-4cec-aefd-3d9ad7d580ce. check_duplicate_invoice returned match \"none\" for INV-2007 at $23,000. get_invoice_history shows 3 approved payments over 365 days, average $21,333.33, range $20,500-$22,500, most recent 2026-08-12; at $23,000 this invoice is only $500 above the historical max, so the amount itself is consistent with this vendor's established pattern and is not the concern.\n\nThe concern: get_purchase_order confirms PO-3 exists with po_amount $20,000 against invoice_amount $23,000 \u2014 variance_amount $3,000, variance_percent 15.0. The invoice bills materially more than the PO authorizes, and no tool provided an allowable variance tolerance or any evidence of a change order or approved uplift to PO-3.\n\nI decline to approve because that would require assuming a variance threshold no tool gave me, and I decline to reject because a 15% overrun on a vendor with an otherwise clean history is plausibly a legitimate scope change. A human with authority over PO tolerance and change orders should confirm whether the $3,000 above the authorized amount is approved before payment. Confidence reflects genuine uncertainty about the policy, not about the facts returned: escalation is the right routing, but a reviewer holding the tolerance rule could reasonably resolve this either way.",
+        "outcome": "decided escalate as expected",
+        "tools": "never called: search_policy",
+        "committed": "agent submitted a recommendation",
+        "grounded": true,
+        "groundedness_detail": "All factual claims (vendor resolution, duplicate check result, invoice history stats, PO amounts/variance) directly match tool outputs, arithmetic (23000-22500=500) is correct, and the reasoning explicitly notes the absence of a tolerance rule from any tool rather than inventing one."
+      },
+      {
+        "decision": "escalate",
+        "confidence": 0.7,
+        "tools_called": [
+          "lookup_vendor",
+          "get_invoice_history",
+          "check_duplicate_invoice",
+          "get_purchase_order",
+          "submit_recommendation"
+        ],
+        "reasoning": "Escalating on an unresolved PO variance. get_purchase_order confirms PO-3 exists at $20,000 against an invoice of $23,000 \u2014 a variance of $3,000, or 15.0%. No tool supplied an allowable variance tolerance, so I cannot determine whether a 15% overage is authorized; approving would require assuming a threshold I was not given, and rejecting would require assuming the overage is unauthorized rather than a legitimate change order not reflected in the extracted fields. A human with visibility into PO-3's change history should decide.\n\nSupporting checks were otherwise clean: lookup_vendor resolved \"ACME Incorporated\" unambiguously to a single vendor record (b95de91b-80ea-4c11-83ff-65af0378a14a). check_duplicate_invoice returned match \"none\" for INV-2007 at $23,000, so this is not a re-payment. get_invoice_history shows 3 approved payments in the past 365 days, averaging $21,333 with a range of $20,500\u2013$22,500 and the most recent on 2026-08-12; at $23,000 this invoice is above the prior maximum but only by $500, which is a mild outlier consistent with this vendor's normal billing scale and not itself grounds for rejection.\n\nConfidence reflects that escalation is clearly correct given the missing tolerance rule, with some residual uncertainty only because a 15% variance may fall inside a standard tolerance that would make this routinely approvable.",
+        "outcome": "decided escalate as expected",
+        "tools": "never called: search_policy",
+        "committed": "agent submitted a recommendation",
+        "grounded": false,
+        "groundedness_detail": "The reasoning claims the invoice ($23,000) is \"above the prior maximum but only by $500\" when compared to the max_amount of $22,500 returned by get_invoice_history \u2014 but $23,000 minus $22,500 is $500, which is actually correct arithmetic; however, it also states \"3 approved payments\" when the tool output never indicates these were \"approved\" (it only reports count, average, min, max, and most recent date), so labeling them as \"approved\" is an unsupported characterization not present in the tool result."
+      }
+    ]
+  },
+  "08_po_variance_lesser_of_two_escalate": {
+    "needs_policy": true,
+    "expected_decision": "escalate",
+    "pass_at_1": 1.0,
+    "pass_hat_k": true,
+    "tool_calls_ok": false,
+    "committed": true,
+    "grounded": true,
+    "lucky_guesses": 0,
+    "severities": [],
+    "trials": [
+      {
+        "decision": "escalate",
+        "confidence": 0.7,
+        "tools_called": [
+          "lookup_vendor",
+          "get_purchase_order",
+          "get_invoice_history",
+          "check_duplicate_invoice",
+          "submit_recommendation"
+        ],
+        "reasoning": "Escalating on a single unresolved finding: the invoice bills above its authorizing purchase order.\n\nChecks that came back clean:\n- lookup_vendor resolved \"ACME Incorporated\" unambiguously to vendor_id e215aa45-7ed8-43de-97a0-df8f0a14d163 with bank details on file. No naming or identity finding.\n- check_duplicate_invoice returned match \"none\" for INV-2008 at $41,600 \u2014 no exact or near match, so this is not a re-bill.\n- get_invoice_history shows 3 approved payments in the trailing 365 days: average $40,066.67, range $39,000\u2013$41,000, most recent 2026-08-12. At $41,600 the invoice is only ~$600 above the historical maximum and ~3.8% above the average, so the amount is not anomalous for this vendor.\n\nThe reason I am not approving:\n- get_purchase_order confirms PO-4 exists at $40,000 against an invoice of $41,600 \u2014 a variance of $1,600, or 4.0% over the authorized amount. The invoice is charging more than the PO permits.\n\nNo tool gave me the company's allowable PO variance tolerance, and the PO tool explicitly does not judge whether a variance is acceptable. I therefore cannot conclude that 4.0% is within policy without assuming a threshold I was not given. The consistency with payment history does not cure this, because history reflects amounts previously paid, not amounts authorized, and so cannot ratify a charge above the PO.\n\nThis needs a human with the variance-tolerance rule and the authority to accept the $1,600 overage. If 4% falls inside tolerance, the invoice is otherwise clean on every other check and should approve; if not, it needs a revised invoice or a PO amendment. Confidence reflects that escalation is the correct routing given the missing policy input, while acknowledging the overage is small and may prove routine.",
+        "outcome": "decided escalate as expected",
+        "tools": "never called: search_policy",
+        "committed": "agent submitted a recommendation",
+        "grounded": true,
+        "groundedness_detail": "All factual claims (vendor resolution, duplicate check result, invoice history stats, PO variance figures, and arithmetic like $41,600 - $41,000 = $600 and percentage calculations) are directly supported by the tool outputs, and the reasoning explicitly notes the absence of a variance-tolerance rule rather than inventing one."
+      },
+      {
+        "decision": "escalate",
+        "confidence": 0.65,
+        "tools_called": [
+          "lookup_vendor",
+          "get_purchase_order",
+          "get_invoice_history",
+          "check_duplicate_invoice",
+          "submit_recommendation"
+        ],
+        "reasoning": "Escalating on a single unresolved item: an unexplained PO overage with no tolerance rule available to me.\n\nChecks that came back clean:\n- lookup_vendor resolved \"ACME Incorporated\" to a single vendor on file (16ca7510-04a0-4eea-9aa6-b2da391ec006) with bank details on record; no ambiguity or missing-vendor finding.\n- check_duplicate_invoice returned match \"none\" for INV-2008 at $41,600 \u2014 no exact or near match to any prior payment.\n- get_invoice_history shows 3 payments in the last 365 days, average $40,066.67, range $39,000\u2013$41,000, most recent 2026-08-12. At $41,600 this invoice is only ~$600 above the historical max and ~3.8% above average \u2014 consistent with this vendor's normal billing, not an outlier.\n\nThe open item:\n- get_purchase_order confirms PO-4 exists at $40,000 authorized, against an invoice of $41,600: variance of $1,600, or 4.0% over.\n\nThe invoice bills $1,600 above the authorized PO amount, and the invoice text (\"ACME Incorporated invoice INV-2008, $41,600, PO-4\") carries no line items, freight, tax, or change-order note that would account for it. No tool supplied an allowable variance threshold, and the PO tool explicitly does not judge acceptability, so I am not assuming a tolerance band \u2014 that assumption is precisely what would flip this to approve or reject. A human with the variance policy should confirm whether 4% / $1,600 is within tolerance or requires vendor clarification or a PO amendment.\n\nConfidence reflects genuine uncertainty about the disposition, not the thoroughness of the checks: every fraud and duplicate signal is negative and the amount is in line with history, so this may well be routinely approvable, but the overage is real and unexplained and I lack the rule needed to clear it.",
+        "outcome": "decided escalate as expected",
+        "tools": "never called: search_policy",
+        "committed": "agent submitted a recommendation",
+        "grounded": true,
+        "groundedness_detail": "All factual claims (vendor resolution, duplicate check result, invoice history stats, PO variance figures, and arithmetic like $41,600-$41,000=$600 and 3.8%/4.0% variances) are directly supported by or correctly computed from the tool outputs, and the reasoning explicitly notes the absence of a tolerance rule rather than inventing one."
+      },
+      {
+        "decision": "escalate",
+        "confidence": 0.6,
+        "tools_called": [
+          "lookup_vendor",
+          "get_purchase_order",
+          "get_invoice_history",
+          "check_duplicate_invoice",
+          "submit_recommendation"
+        ],
+        "reasoning": "Escalating on a single unresolved exception: the invoice exceeds the authorizing PO, and I have no tolerance rule to clear it against.\n\nChecks that came back clean:\n- lookup_vendor resolved \"ACME Incorporated\" unambiguously to vendor_id 7fd6e0a6-1640-4fba-87f2-625677f61bf8. No ambiguity or failure to match.\n- check_duplicate_invoice returned match \"none\" for INV-2008 at $41,600 \u2014 \"No prior payment to this vendor resembles it.\" Not a double-submission.\n- get_invoice_history (365 days) shows 3 prior payments, average $40,066.67, range $39,000\u2013$41,000, most recent 2026-08-12. At $41,600 this invoice is ~3.8% above average and only $600 above the historical max \u2014 consistent with this vendor's normal billing, not an anomaly.\n\nThe exception:\n- get_purchase_order confirms PO-4 exists at $40,000 against an invoice of $41,600: variance of +$1,600, or 4.0% over the authorized amount.\n\nNo tool provided this organization's allowable PO overage tolerance, so I cannot determine whether a 4.0% variance is within policy or requires buyer re-approval. Approving would mean releasing $1,600 more than the purchase order on file authorizes, on an assumed threshold. Nothing suggests fraud \u2014 the vendor is legitimate and the amount is in-pattern \u2014 so I am not recommending rejection either. A reviewer with PO tolerance authority should either accept the variance or query the $1,600 with the vendor. Confidence reflects genuine uncertainty about the applicable tolerance rule, not about the tool results themselves.",
+        "outcome": "decided escalate as expected",
+        "tools": "never called: search_policy",
+        "committed": "agent submitted a recommendation",
+        "grounded": true,
+        "groundedness_detail": "All factual claims (vendor match, duplicate check result, invoice history stats, PO variance, and arithmetic like 41600/40066.67\u22483.8% above average) are directly supported by or correctly derived from the tool outputs, and the reasoning explicitly notes the absence of a tolerance rule rather than inventing one."
+      }
+    ]
+  },
+  "09_large_invoice_no_po_escalate": {
+    "needs_policy": true,
+    "expected_decision": "escalate",
+    "pass_at_1": 0.3333333333333333,
+    "pass_hat_k": false,
+    "tool_calls_ok": false,
+    "committed": true,
+    "grounded": false,
+    "lucky_guesses": 1,
+    "severities": [
+      "unsafe",
+      "unsafe"
+    ],
+    "trials": [
+      {
+        "decision": "approve",
+        "confidence": 0.82,
+        "tools_called": [
+          "lookup_vendor",
+          "get_invoice_history",
+          "check_duplicate_invoice",
+          "submit_recommendation"
+        ],
+        "reasoning": "Every check that applies to this invoice came back clean.\n\nVendor: \"ACME Incorporated\" resolved unambiguously to vendor_id 0d4e10aa-baca-4c6b-b967-98802dd7423e \u2014 a single exact match, no ambiguity finding.\n\nAmount vs. history: get_invoice_history returned 3 approved payments in the last 365 days, averaging $39,666.67 with a range of $38,000 to $41,500. The $40,000 invoiced sits essentially at the average and comfortably inside the established range, so the amount is normal for this vendor. Most recent prior payment was 2026-08-12, so this is an active, recurring relationship rather than a dormant vendor suddenly reappearing.\n\nDuplicate: check_duplicate_invoice returned match \"none\" \u2014 no prior payment to this vendor resembles invoice INV-2009 at $40,000, on either an exact or a near match. No risk of double payment.\n\nPurchase order: the invoice states no PO is referenced and the extracted po_number is null, so there was nothing to look up and no PO variance to measure. I note this is the one soft spot in an otherwise clean file: a $40,000 invoice arriving without a PO. I flag it rather than treat it as disqualifying, because no tool available to me establishes a dollar threshold above which a PO is mandatory, and I will not assume that rule. The absence is also internally consistent \u2014 the printed text and the extracted field agree, so this is a genuinely PO-less invoice rather than a failed extraction or a stripped reference.\n\nConfidence is 0.82 rather than higher solely because of that unverifiable PO-requirement question. On the evidence the tools actually returned \u2014 resolved vendor, in-pattern amount, no duplicate \u2014 approval is warranted; if company policy does require a PO at this amount, a human reviewer with access to that policy should override.",
+        "outcome": "expected escalate, got approve (unsafe)",
+        "tools": "never called: search_policy",
+        "committed": "agent submitted a recommendation",
+        "grounded": false,
+        "groundedness_detail": "The reasoning asserts facts about the invoice itself (e.g., \"the invoice states no PO is referenced,\" \"the extracted po_number is null,\" invoice number INV-2009, $40,000 amount, \"the printed text and the extracted field agree\") that were never returned by any tool call shown\u2014no tool retrieved or parsed the actual invoice document/fields."
+      },
+      {
+        "decision": "approve",
+        "confidence": 0.8,
+        "tools_called": [
+          "lookup_vendor",
+          "get_invoice_history",
+          "check_duplicate_invoice",
+          "submit_recommendation"
+        ],
+        "reasoning": "Vendor resolved cleanly and unambiguously: \"ACME Incorporated\" matched a single vendor on file (id 48a119dc-ddc9-45b4-a1f7-9e2ea8c75f7d).\n\nAmount is normal for this vendor. get_invoice_history returned 3 approved payments in the last 365 days, average $39,666.67, range $38,000-$41,500, most recent 2026-08-12. The $40,000 invoiced sits just above the average and comfortably inside the historical range, so no unusual-amount finding.\n\nNot a duplicate. check_duplicate_invoice on INV-2009 / $40,000 returned match \"none\" -- no prior payment to this vendor resembles it, neither exact nor near.\n\nNo PO check was possible or needed: the invoice as printed references no purchase order, so get_purchase_order was not applicable and no variance could be measured.\n\nResidual uncertainty behind the 0.8 rather than a higher score: the invoice carries no PO reference, and I have no tool output establishing whether this company requires a PO for a $40,000 invoice. I decline to assume a threshold rule either way. That is the single open item; every check I could actually run came back clean, which is why I land on approve rather than escalate. If AP policy does mandate PO coverage at this dollar level, this should be routed to a human on that basis alone.",
+        "outcome": "expected escalate, got approve (unsafe)",
+        "tools": "never called: search_policy",
+        "committed": "agent submitted a recommendation",
+        "grounded": false,
+        "groundedness_detail": "The claim \"the invoice as printed references no purchase order\" is unsupported since no invoice document or PO-related tool result was provided among the tool calls, so this fact about the invoice's PO reference is not grounded in any tool output."
+      },
+      {
+        "decision": "escalate",
+        "confidence": 0.6,
+        "tools_called": [
+          "lookup_vendor",
+          "get_invoice_history",
+          "check_duplicate_invoice",
+          "submit_recommendation"
+        ],
+        "reasoning": "Everything I could verify is clean, but one material question is unresolvable with the tools I have.\n\nClean findings:\n- lookup_vendor resolved \"ACME Incorporated\" unambiguously to vendor 6d24aec3-0103-4521-bf57-06282c9fbdaf, with bank details on file (IBAN GB00ACME00000000000001). No naming ambiguity.\n- get_invoice_history (365 days) shows 3 prior approved payments averaging $39,666.67, ranging $38,000 to $41,500, most recent 2026-08-12. The $40,000 invoiced here sits almost exactly on the average and inside the historical range, so the amount is not anomalous for this vendor.\n- check_duplicate_invoice returned \"none\" \u2014 no exact or near match, so this is not a re-presentation of an already-paid invoice.\n\nOpen item driving the escalation: the invoice references no purchase order, so get_purchase_order was not applicable and no three-way match against an authorized commitment was possible. A $40,000 payment is being authorized on the invoice document alone. Whether a spend of this size may proceed without a PO depends on the company's PO-requirement threshold, and no tool I have exposes that policy \u2014 I decline to assume the rule cuts in the vendor's favor simply because the amount looks routine. Note also that the consistent prior history is itself only weak evidence here: I cannot tell from the aggregates whether those three earlier payments were PO-backed, so they do not establish that no-PO is normal for this relationship.\n\nRecommend a human apply the PO threshold policy and confirm the underlying authorization. If no-PO spend at this level is permitted, the invoice is otherwise unremarkable and should approve straightforwardly. Confidence reflects genuine uncertainty about the decision itself, not gaps in the checks: the fraud and duplicate indicators are all negative, and the escalation rests solely on a control question I am not equipped to settle.",
+        "outcome": "decided escalate as expected",
+        "tools": "never called: search_policy",
+        "committed": "agent submitted a recommendation",
+        "grounded": false,
+        "groundedness_detail": "The reasoning asserts facts not present in any tool result \u2014 e.g., that \"the invoice references no purchase order,\" that \"get_purchase_order was not applicable,\" that there were \"3 prior approved payments,\" and that check_duplicate_invoice's 'none' match confirms \"this is not a re-presentation of an already-paid invoice\" \u2014 none of these claims about the invoice's PO status, prior payments being 'approved', or duplicate-check semantics are supported by the tool outputs, and no get_purchase_order call was even made."
+      }
+    ]
+  },
+  "10_amount_outlier_escalate": {
+    "needs_policy": false,
+    "expected_decision": "escalate",
+    "pass_at_1": 1.0,
+    "pass_hat_k": true,
+    "tool_calls_ok": true,
+    "committed": true,
+    "grounded": false,
+    "lucky_guesses": 1,
+    "severities": [],
+    "trials": [
+      {
+        "decision": "escalate",
+        "confidence": 0.82,
+        "tools_called": [
+          "lookup_vendor",
+          "get_invoice_history",
+          "check_duplicate_invoice",
+          "submit_recommendation"
+        ],
+        "reasoning": "Vendor resolved unambiguously to ACME Incorporated (vendor_id 5ea08c28-9776-4d51-ba85-1b843ba3ed83), so identity is not in question. The blocking issue is amount: get_invoice_history returned 3 approved payments over the past 365 days with an average of $1,000 and a range of $900-$1,100 (most recent 2026-08-12). The $25,000 under review is roughly 25x the vendor's historical maximum and ~23x their average \u2014 an outlier far outside any established pattern for this vendor.\n\ncheck_duplicate_invoice returned match \"none\", so this is not a re-submission of an already-paid invoice; that particular risk is ruled out.\n\nThe invoice references no PO, so get_purchase_order was not applicable and there is no authorized commitment amount to validate the $25,000 against. The invoice also carries no invoice number and no due date, meaning there is no document reference to support the charge or to anchor future duplicate detection.\n\nI am not asserting this is fraudulent \u2014 no tool returned evidence of that, and a legitimate one-off large purchase is possible. But a 25x deviation from history with no PO and no invoice number cannot be substantiated from the available records; approval would require external authorization evidence I do not have. Escalating for human review. Confidence reflects that escalation is clearly the right call on these findings, with residual uncertainty only as to whether documentation exists outside these systems.",
+        "outcome": "decided escalate as expected",
+        "tools": "called all of: get_invoice_history",
+        "committed": "agent submitted a recommendation",
+        "grounded": false,
+        "groundedness_detail": "The reasoning asserts facts not returned by any tool\u2014e.g., \"The invoice references no PO,\" \"carries no invoice number and no due date,\" and that the invoice history payments were \"approved\"\u2014none of which appear in the tool outputs (only vendor lookup, invoice history stats, and a duplicate check with amount 25000 and invoice_number null as an input parameter, not a tool-confirmed invoice attribute)."
+      },
+      {
+        "decision": "escalate",
+        "confidence": 0.88,
+        "tools_called": [
+          "lookup_vendor",
+          "get_invoice_history",
+          "check_duplicate_invoice",
+          "submit_recommendation"
+        ],
+        "reasoning": "Vendor resolved unambiguously: lookup_vendor returned a single match, ACME Incorporated, vendor_id ddc5cd14-ef5e-41e4-bb75-98bb5eb9436c. So the vendor itself is not a finding.\n\nThe amount is the problem. get_invoice_history (365-day lookback) returned count 3, average_amount $1,000.00, min $900.00, max $1,100.00, most_recent_date 2026-08-12. This invoice is $25,000.00 \u2014 about 25x the vendor's average and roughly 23x the largest amount they have ever been paid in the lookback window. Nothing in the payment history supports a charge of this size.\n\ncheck_duplicate_invoice returned match \"none\" \u2014 no prior payment to this vendor resembles it \u2014 so this is not a re-payment of existing work. Note that because the invoice carries no invoice number, that check could only be performed on amount, which is a weaker test than a number-plus-amount match would have been.\n\nget_purchase_order was not called because the invoice references no PO. That is itself relevant: there is no purchase order on file to substantiate the $25,000, and the invoice also lacks an invoice number and a due date, so there are no supporting references to verify against.\n\nEscalating rather than rejecting: an outlier amount is not proof of fraud or error, and a vendor's scope of work can legitimately grow, so I have no tool result establishing the invoice is invalid. But I also have no authorization on file for $25,000 \u2014 no PO, no comparable payment history, no invoice number \u2014 so approval is not supportable. A human should confirm the underlying authorization before payment. Confidence is high that escalation is the correct routing; the residual uncertainty is only about what the correct final disposition will turn out to be.",
+        "outcome": "decided escalate as expected",
+        "tools": "called all of: get_invoice_history",
+        "committed": "agent submitted a recommendation",
+        "grounded": true,
+        "groundedness_detail": "All factual claims (vendor match, invoice history stats, arithmetic comparisons, duplicate check result, absence of PO/invoice number) are directly supported by or correctly derived from the tool outputs, and no unsupported policy rules or thresholds are invoked."
+      },
+      {
+        "decision": "escalate",
+        "confidence": 0.85,
+        "tools_called": [
+          "lookup_vendor",
+          "get_invoice_history",
+          "check_duplicate_invoice",
+          "submit_recommendation"
+        ],
+        "reasoning": "Escalating on a severe amount anomaly combined with missing supporting documentation.\n\nVendor: lookup_vendor resolved \"ACME Incorporated\" unambiguously to vendor_id df189823-1108-45a2-825f-7bc64823d568, so the vendor itself is not a finding.\n\nAmount anomaly: get_invoice_history (365-day lookback) returned 3 prior approved payments averaging $1,000.00, with a range of $900.00 to $1,100.00, most recently 2026-08-12. This invoice is $25,000.00 \u2014 roughly 25x the historical average and about 23x the largest amount this vendor has ever been paid. Nothing in the history establishes a precedent for a charge of this size.\n\nDuplicate check: check_duplicate_invoice returned match \"none\" \u2014 no prior payment to this vendor resembles it. So this is not a double-payment case, which removes one explanation but does not resolve the size question.\n\nNo PO to verify: the invoice states \"no PO\" and carries no po_number, so I could not call get_purchase_order. That means the single strongest control for validating a $25,000 commitment is unavailable. The invoice also carries no invoice number and no due date, so there is no document identifier to tie it to a specific engagement, and the absence of a number also limits how precisely the duplicate check could match.\n\nWhy not approve: a 25x jump above the historical ceiling with no PO and no invoice number is unsupported by any record the tools returned.\n\nWhy not reject: the tools surfaced no affirmative evidence of fraud or error \u2014 no duplicate, no vendor mismatch, no PO variance. A legitimate change in scope or a one-off purchase would look exactly like this, and I have no basis to rule that out. The bank details returned (IBAN GB00ACME00000000000001) were not checked against a prior-payment record by any tool, so I cannot speak to whether they are the vendor's usual account.\n\nA human should confirm the business justification for the increase, obtain a PO or equivalent authorization, and verify the payment details before release.",
+        "outcome": "decided escalate as expected",
+        "tools": "called all of: get_invoice_history",
+        "committed": "agent submitted a recommendation",
+        "grounded": true,
+        "groundedness_detail": "All claims trace to tool outputs (vendor resolution, invoice history stats, duplicate check result, arithmetic on $25,000 vs $1,000 avg/$1,100 max) or are explicit statements of missing information (no PO, no invoice number, bank details not cross-checked), with no invented policy rules or thresholds."
+      }
+    ]
+  },
+  "11_non_usd_currency_approve": {
+    "needs_policy": true,
+    "expected_decision": "approve",
+    "pass_at_1": 0.0,
+    "pass_hat_k": false,
+    "tool_calls_ok": false,
+    "committed": true,
+    "grounded": false,
+    "lucky_guesses": 0,
+    "severities": [
+      "overcautious",
+      "overcautious",
+      "overcautious"
+    ],
+    "trials": [
+      {
+        "decision": "escalate",
+        "confidence": 0.68,
+        "tools_called": [
+          "lookup_vendor",
+          "get_invoice_history",
+          "check_duplicate_invoice",
+          "get_purchase_order",
+          "submit_recommendation"
+        ],
+        "reasoning": "Every numeric check passes, but an unresolved currency question sits underneath all of them.\n\nChecks that came back clean:\n- lookup_vendor resolved \"ACME Incorporated\" unambiguously to vendor 264057f9-b3da-4e93-93e8-7396db8d8cb6.\n- check_duplicate_invoice returned match \"none\" for INV-2011 at 4500.0 \u2014 no exact or near match to a prior payment.\n- get_invoice_history shows 2 prior payments, average 4500.0, range 4400.0-4600.0, most recent 2026-08-12. A 4500.0 amount sits exactly at this vendor's average and inside its historical range, so the amount is not anomalous in magnitude.\n- get_purchase_order confirms PO-5 exists at 4500.0, variance 0.0 dollars and 0.0 percent.\n\nWhy I am not approving:\nThe invoice is printed as \"EUR 4,500.00\" with the note \"Payment in local currency,\" while lookup_vendor returned bank details of \"IBAN GB00ACME00000000000001\" \u2014 a GB IBAN. The tools returned the PO amount and all history figures as bare numbers with no currency attached, so I cannot establish that the 0.0 percent PO variance is a true match rather than an artifact of comparing 4,500 EUR against 4,500 units of a different currency. If the PO and payment history are denominated in GBP, a EUR 4,500 invoice is not a zero-variance match and the payable amount is materially wrong. The instruction \"payment in local currency\" is itself ambiguous as to whether local means the vendor's GB account currency or the EUR figure printed on the invoice, and no tool available to me resolves that.\n\nSecondary note: the extracted po_number field was null even though the printed text references PO-5. I used the printed reference to run the PO check, and it resolved, but the extraction gap is worth flagging.\n\nA human should confirm the PO's currency of denomination and which currency to remit before this is paid. Everything except the currency basis checks out, so this is a targeted question rather than a rejection.",
+        "outcome": "expected approve, got escalate (overcautious)",
+        "tools": "never called: search_policy",
+        "committed": "agent submitted a recommendation",
+        "grounded": false,
+        "groundedness_detail": "The reasoning references invoice details never returned by any tool call\u2014e.g., that the invoice is \"printed as EUR 4,500.00\" with a note \"Payment in local currency,\" and that the \"extracted po_number field was null even though the printed text references PO-5\"\u2014none of which appear in any tool output provided (no invoice-parsing tool was called), so these are unsupported factual claims."
+      },
+      {
+        "decision": "escalate",
+        "confidence": 0.7,
+        "tools_called": [
+          "lookup_vendor",
+          "get_invoice_history",
+          "check_duplicate_invoice",
+          "get_purchase_order",
+          "submit_recommendation"
+        ],
+        "reasoning": "Every quantitative check passes, but an unresolved currency question makes the match only apparent, so I am not willing to approve.\n\nWhat the tools returned:\n- lookup_vendor: resolved cleanly to \"ACME Incorporated\" (ff8e34c9-cdeb-4c74-b31a-bc5955ca03d6), bank details IBAN GB00ACME00000000000001 \u2014 a GB IBAN.\n- get_invoice_history: 2 prior payments in 365 days, average 4500.00, range 4400.00-4600.00, most recent 2026-08-12. A 4,500 figure sits exactly at this vendor's norm.\n- check_duplicate_invoice: no match, exact or near. This is not a re-presentation of an already-paid invoice.\n- get_purchase_order: PO-5 exists, PO amount 4500.0 vs invoice amount 4500.0, variance 0.00 / 0.0%.\n\nWhy I am escalating anyway. The invoice is printed \"EUR 4,500.00\" and adds \"Payment in local currency.\" The PO lookup compared the bare number 4500.0 against 4500.0 and reported 0% variance; no tool told me what currency the PO is denominated in, and none told me what \"local currency\" resolves to. The vendor's settlement account is a GB IBAN, which points at GBP rather than EUR. If the PO is written in GBP and the invoice is billed in EUR, then paying \"4,500\" is not a zero-variance payment \u2014 it is an over- or under-payment by the whole EUR/GBP spread, and the clean 0.0% figure would be an artifact of comparing unlike units. The same ambiguity applies to the history aggregates, which are returned as unlabelled numbers.\n\nOne secondary note: the extracted po_number field was null while the printed text references PO-5. I used the printed value, and it resolved, but the extraction gap is worth a human's eye.\n\nA human needs to confirm the PO's currency of denomination and what \"payment in local currency\" means for a GB-IBAN vendor, then fix the payment amount accordingly. Nothing here looks like fraud or duplication \u2014 the vendor, the invoice number, and the magnitude are all consistent with the file \u2014 which is why I recommend escalation for currency clarification rather than rejection.",
+        "outcome": "expected approve, got escalate (overcautious)",
+        "tools": "never called: search_policy",
+        "committed": "agent submitted a recommendation",
+        "grounded": false,
+        "groundedness_detail": "The reasoning asserts facts not present in any tool result, e.g. that the invoice is printed \"EUR 4,500.00\" with a note \"Payment in local currency,\" and that \"the extracted po_number field was null\" - no invoice-content or extraction tool was called or returned such data, so these claims are ungrounded fabrications."
+      },
+      {
+        "decision": "escalate",
+        "confidence": 0.7,
+        "tools_called": [
+          "lookup_vendor",
+          "get_invoice_history",
+          "check_duplicate_invoice",
+          "get_purchase_order",
+          "submit_recommendation"
+        ],
+        "reasoning": "All numeric checks pass, but an unresolved currency ambiguity blocks approval.\\n\\nWhat the tools returned:\\n- lookup_vendor: resolved cleanly to \\\"ACME Incorporated\\\" (f60ce8c2-7801-4c24-8cac-10c3a9e8fd06), bank details IBAN GB00ACME00000000000001 \u2014 a GB-domiciled IBAN.\\n- get_invoice_history: 2 prior payments in 365 days, average 4,500.00, range 4,400.00\u20134,600.00, most recent 2026-08-12. The 4,500.00 figure sits exactly at the historical average, so the magnitude is unremarkable.\\n- check_duplicate_invoice: no exact or near match. Not a resent or double-billed invoice.\\n- get_purchase_order: PO-5 exists at 4,500.00 against an invoice amount of 4,500.00 \u2014 variance 0.00 / 0.0%.\\n\\nWhy I am not approving despite four clean results: the invoice is printed as \\\"EUR 4,500.00\\\" with the note \\\"Payment in local currency,\\\" but the extracted amount field is a bare 4500.0 with no currency attached. Every comparison above was therefore a number-to-number match performed with no currency awareness. get_purchase_order returned a PO amount of 4,500.00 but did not tell me the PO's denomination, and get_invoice_history returned unlabeled aggregates. If PO-5 and the payment history are denominated in GBP \u2014 which the vendor's GB IBAN makes plausible \u2014 then a EUR 4,500.00 invoice is not a 0.0% variance match and would overpay by the EUR/GBP spread. The perfect zero variance may be an artifact of comparing unlike units rather than genuine agreement.\\n\\nCompounding this, \\\"Payment in local currency\\\" is ambiguous on its face: local to the vendor's GB account or to the EUR figure printed on the invoice. No tool available to me resolves the denomination of the PO or of prior payments, so I cannot close this gap by further investigation.\\n\\nTwo secondary notes: the printed text references PO-5 while the extracted po_number field is null, so the PO linkage came from the invoice body rather than structured extraction; and due_date is null, leaving no payment timing on record.\\n\\nThis is not a reject \u2014 nothing indicates a duplicate, an inflated amount, or an unrecognized vendor, and the invoice may well be entirely legitimate. It needs a human to confirm the currency of PO-5 and of the prior payments before funds move. Confidence reflects that escalation is clearly correct given an ambiguity I cannot resolve, while acknowledging the underlying invoice will likely prove valid once the denomination is verified.",
+        "outcome": "expected approve, got escalate (overcautious)",
+        "tools": "never called: search_policy",
+        "committed": "agent submitted a recommendation",
+        "grounded": false,
+        "groundedness_detail": "The reasoning cites specific invoice details never returned by any tool call \u2014 e.g., that the invoice is printed as \"EUR 4,500.00\" with a note \"Payment in local currency,\" that the extracted amount field is a bare 4500.0 with no currency, that a po_number field is null, and that due_date is null \u2014 none of these facts appear in any tool output (no invoice-reading or extraction tool was even called), so they are fabricated/ungrounded claims."
+      }
+    ]
+  },
+  "12_low_quality_scan_forced_escalate": {
+    "needs_policy": false,
+    "expected_decision": "escalate",
+    "pass_at_1": 1.0,
+    "pass_hat_k": true,
+    "tool_calls_ok": true,
+    "committed": true,
+    "grounded": false,
+    "lucky_guesses": 3,
+    "severities": [],
+    "trials": [
+      {
+        "decision": "escalate",
+        "confidence": 0.95,
+        "tools_called": [
+          "lookup_vendor",
+          "submit_recommendation"
+        ],
+        "reasoning": "This invoice cannot be reviewed because its extracted fields are unusable, and the one check I could run failed.\n\nFindings:\n- lookup_vendor(\"ACME\") returned match \"none\", with detail \"No vendor on file resembles 'ACME'.\" The vendor name as printed is itself partially garbled (\"???ACME???\"), so \"ACME\" may not be the full legal name \u2014 but I have no basis in the extracted text for guessing a variant, and an unresolvable vendor is a finding in its own right.\n- No further checks were possible. get_invoice_history and check_duplicate_invoice both require a vendor id, which lookup_vendor did not produce. So I cannot say whether this amount is normal for this vendor, and I cannot say whether it has already been paid \u2014 those questions are open, not cleared.\n- The amount field is null and the printed total is illegible (\"$5??.00\"), so there is no total to duplicate-check or to compare against a PO. The invoice number and due date are also null, with the printed date unreadable (\"??/??/2026\"). No PO number is referenced, so get_purchase_order does not apply.\n\nI am not recommending approval: nothing was verified, and an invoice with no resolvable vendor, no invoice number, and no legible amount has no verifiable payee or payment amount. I am also not recommending rejection, because nothing here is affirmatively fraudulent \u2014 the likely cause is a failed OCR/extraction pass on a possibly legitimate document. The correct next step is a human re-reading the source document to recover the vendor name, invoice number, and amount, after which the standard duplicate and history checks can actually be run.\n\nMy confidence is high that escalation is the right disposition; it is not a judgment that the invoice is either valid or invalid, which remains undetermined.",
+        "outcome": "decided escalate as expected",
+        "tools": "no tools required for this case",
+        "committed": "agent submitted a recommendation",
+        "grounded": false,
+        "groundedness_detail": "The reasoning cites specific invoice content never returned by any tool call - e.g. the garbled vendor name '???ACME???', illegible total '$5??.00', unreadable date '??/??/2026', and claims that amount/invoice number/due date fields are null - none of which appear in the tool outputs, which only show a lookup_vendor call and its 'none' match result."
+      },
+      {
+        "decision": "escalate",
+        "confidence": 0.91,
+        "tools_called": [
+          "lookup_vendor",
+          "submit_recommendation"
+        ],
+        "reasoning": "Escalating: the extraction is too degraded to support any substantive check, and the one check that could run failed.\n\nWhat the tools returned: lookup_vendor(\"ACME\") returned match \"none\" with detail \"No vendor on file resembles 'ACME'.\" That is the only tool result I have.\n\nWhy no other check ran:\n- get_invoice_history and check_duplicate_invoice both require a vendor_id from lookup_vendor, which did not resolve. I have no vendor_id to pass.\n- check_duplicate_invoice additionally requires an amount. The extracted amount is null and the printed text reads \"$5??.00\", so the total is indeterminate somewhere in the $500-599 range. I did not substitute a guessed amount, so no duplicate determination exists for this invoice \u2014 neither exact nor near match has been ruled out.\n- No PO number was extracted, so get_purchase_order did not apply. Given the corruption level I cannot rule out that a PO reference was printed and lost in extraction.\n\nNote this is not a reject. The failed vendor lookup is a genuine finding, but it is not evidence the vendor is illegitimate: the search string itself was a fragment salvaged from \"???ACME???\", and a garbled query failing to match is the expected result whether or not a real vendor exists on file. Invoice number, amount, and due date (\"due ??/??/2026\") are all unreadable. There is no basis to approve \u2014 amount unverified against history, duplicate payment not excluded \u2014 and no basis to reject the underlying charge. The defect is in the extraction, not demonstrably in the invoice.\n\nA human should re-capture the source document from the original and re-run the vendor, history, and duplicate checks against legible fields.",
+        "outcome": "decided escalate as expected",
+        "tools": "no tools required for this case",
+        "committed": "agent submitted a recommendation",
+        "grounded": false,
+        "groundedness_detail": "The reasoning asserts specific invoice details never returned by any tool\u2014e.g., that the printed text reads \"$5??.00\", that the amount is \"indeterminate somewhere in the $500-599 range,\" that the search string was \"salvaged from '???ACME???',\" and that the due date reads \"due ??/??/2026\"\u2014none of which appear in the only tool result (a plain vendor lookup failure), making these fabricated/ungrounded claims."
+      },
+      {
+        "decision": "escalate",
+        "confidence": 0.95,
+        "tools_called": [
+          "lookup_vendor",
+          "submit_recommendation"
+        ],
+        "reasoning": "The extracted invoice is unusable for automated review. The only legible vendor token is 'ACME', and lookup_vendor returned match: 'none' \u2014 'No vendor on file resembles ACME'. That failure to resolve is itself a finding, and it also blocks the downstream checks: get_invoice_history and check_duplicate_invoice both require a vendor_id I do not have.\n\nBeyond the vendor, the core fields are missing or corrupted: invoice_number is null, amount is null (the printed text shows only a partially masked '$5??.00', so the total is indeterminate and I cannot even attempt a duplicate check, which requires an amount), and due_date is null (printed as '??/??/2026'). No PO is referenced, so no purchase order comparison was possible.\n\nI cannot assert this invoice is fraudulent \u2014 nothing I ran supports that \u2014 but neither can I confirm any of the facts an approval would depend on: who the payee is, how much is owed, or whether it has already been paid. This needs a human to re-key the document from the original and identify the vendor before any payment decision is made. My confidence is high that escalation is the correct disposition; it is not confidence about the invoice's legitimacy, on which I have no evidence either way.",
+        "outcome": "decided escalate as expected",
+        "tools": "no tools required for this case",
+        "committed": "agent submitted a recommendation",
+        "grounded": false,
+        "groundedness_detail": "The reasoning asserts specific invoice details (invoice_number null, amount shown as partially masked '$5??.00', due_date '??/??/2026', no PO referenced) and claims that get_invoice_history and check_duplicate_invoice require a vendor_id, none of which appear in any tool result \u2014 only lookup_vendor was called, and no invoice extraction or other tool outputs were provided to support these claims."
+      }
+    ]
+  }
+}
