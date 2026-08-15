@@ -173,7 +173,7 @@ whether the number matches exactly. Drop the pairs and an agent that escalates
 everything scores well, which is the one-sided optimization the suite exists to
 make impossible.
 
-### Did retrieval earn its place?
+### Incremental Result Improvement
 
 The suite was first run before and after `search_policy` was added, with
 nothing else changed. It was re-run later against the current code, after the
@@ -201,23 +201,30 @@ system could not represent the fact the case turned on. Adding the columns —
 and teaching `get_purchase_order` to report `currency_match` and decline to
 compute a variance across units — fixed it.
 
-**Case 04 is the remaining failure, and the agent is arguably right.** The case
-seeds a $500 invoice with a drifted vendor name and no purchase order, and
-expects `approve`. All three trials escalate instead. The reasoning is
-consistent and policy-grounded: §III routes non-PO payments down a separate,
-more controlled path and defers the "was a PO required at this amount?"
-threshold to the UNFPA Procurement Procedures. So the agent declines to assert that $500 sits below a limit it cannot
-read, and says so explicitly rather than treating an unperformable check as a
-passed one. The previous tests show that vendor drift is fine, so this eval makes sense.
+**Case 04 is the remaining failure, and it no longer measures what it was
+written to measure.** The case seeds a $500 invoice with a drifted vendor name
+and no purchase order, and expects `approve`. All three trials escalate.
+
+The drift itself resolves cleanly every time — `lookup_vendor` turns the
+printed "Acme Inc" into `ACME Incorporated` with `match: "resolved"` in all
+three trials, and the tool-coverage grader passes. The capability the case
+exists to test works. What decides the outcome is a second variable the case was
+never designed to probe: with no PO referenced, §III routes the invoice down
+the separate non-PO path and defers the "was a purchase order *required* at
+this amount?" threshold to the UNFPA Procurement Procedures — a document that
+is not in the corpus. So the agent declines to assert that $500 sits below a
+limit it cannot read, and says so explicitly rather than treating an
+unperformable check as a passed one.
 
 That is the same reasoning that eliminated all three unsafe approvals on case
-09; cases 04 and 09 differ only in amount. The expectation is left as `approve`
+09; 04 and 09 differ only in amount. The expectation is left as `approve`
 rather than quietly rewritten to match the behaviour, so the suite reports
-11/12 — but the miss is the system escalating a no-PO invoice and naming the
-single reason why, which is a defensible outcome and a recoverable one. A
-reviewer loses a minute. Closing it properly means giving the agent the missing
-document or an ERP integration that exposes the requisition threshold, not
-tuning the agent.
+11/12 — but read as a statement about the agent, the case is reassuring rather
+than damning: the vendor resolution passes, and the escalation names the single
+reason it happened, which is exactly what a reviewer needs. A reviewer loses a
+minute. Closing it properly means splitting the two variables apart — giving
+the drift case a PO so it tests only the name — or supplying the missing
+document, not tuning the agent.
 
 Full analysis of the original comparison is in
 [`finalResults.md`](finalResults.md). Raw data:
