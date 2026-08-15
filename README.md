@@ -119,10 +119,64 @@ clause is citable.
 
 ---
 
-## Does the retrieval earn its place?
+## Evals
 
-Twelve cases, three trials each, run before and after `search_policy` was
-added. Nothing else changed.
+Twelve cases, three trials each. Every trial runs in a database emptied and
+reseeded from scratch, inside a transaction that is rolled back afterwards —
+two of the agent's tools answer questions *about accumulated state*, so a trial
+that leaves rows behind doesn't merely pollute the next one, it changes what
+the next one is testing.
+
+### What each trial is graded on
+
+| Grader | Question |
+|---|---|
+| `grade_outcome` | Did it reach the decision a careful reviewer would? |
+| `grade_tool_calls` | Did it actually run the checks this case turns on? Presence only — extra tools aren't a failure |
+| `grade_committed` | Did the agent decide, or did the iteration limit force `escalate`? Seven cases expect escalation, so without this an agent that never committed would score over half the suite |
+| `grade_groundedness` | Is every claim traceable to a tool result? Judged by a second, cheaper model — this is the one that catches a right answer reached by recalling a plausible rule instead of retrieving one |
+
+Failures carry a **severity**, because a single pass rate hides which kind you
+got. Only a wrongful *approve* is `unsafe` — the one branch where money leaves
+without anyone looking. Escalating something it could have decided, or refusing
+something legitimate, is recoverable by the human who sees it next. Three
+needless escalations is a tuning problem; three wrongful approvals is a system
+you cannot deploy.
+
+### The twelve cases
+
+`policy` marks cases whose correct answer exists only in the AP policy document
+— these are expected to fail before retrieval was added. That gap is the
+measurement, not a defect.
+
+| # | Case | Expect | What it probes |
+|---|---|---|---|
+| 01 | `clean_approve` | approve | Baseline. Everything reconciles — does the happy path clear without manufactured caution? |
+| 02 | `exact_duplicate_reject` | reject | Same number *and* amount as a prior payment. A confirmed duplicate can be refused outright |
+| 03 | `near_duplicate_escalate` | escalate | Same amount, suffixed number (`INV-1` vs `INV-1-A`). Suspicious but not proven — belongs in front of a human, not refused |
+| 04 | `vendor_name_drift_approve` | approve | Invoice prints "Acme Inc"; the master file says "ACME Incorporated". Can it resolve a drifted name rather than treating it as unknown? |
+| 05 | `vendor_not_on_file_escalate` | escalate | A genuinely unknown payee. An unknown vendor is a stop, not a guess |
+| 06 | `po_variance_within_tolerance_approve` | approve | `policy` · $400 on a $6,000 PO. The lesser limit is 10% ($600), so this clears — the clean test that a rule was *read* rather than guessed |
+| 07 | `po_variance_outside_tolerance_escalate` | escalate | `policy` · $3,000 on a $20,000 PO — 15% and $3,000, outside both bounds. No reading of §II lets this through |
+| 08 | `po_variance_lesser_of_two_escalate` | escalate | `policy` · The precision test. $1,600 on a $40,000 PO is only 4% — comfortably inside the percentage — but the cap is the *lesser* of 10% or $1,000. An agent that skims "10 percent" approves this |
+| 09 | `large_invoice_no_po_escalate` | escalate | `policy` · $40,000 with no PO. The policy defers the PO-required threshold to a document not in the corpus, so the right move is to escalate rather than invent a number — this tests whether it recognizes the edge of what it actually read |
+| 10 | `amount_outlier_escalate` | escalate | $25,000 against a history of ~$1,000 payments. Judging an amount against the vendor's own pattern |
+| 11 | `non_usd_currency_approve` | approve | `policy` · A EUR invoice against a EUR PO. §IV.F makes local currency the norm, so this is ordinary business — the currency should be cited, not flagged as an anomaly |
+| 12 | `low_quality_scan_forced_escalate` | escalate | A scan so degraded no amount survived extraction. Nothing to check and nothing to be confident about — the confidence floor should carry this one |
+
+Two rules govern the suite. **A case may only test a rule the policy actually
+states** — a case asserting a rule the corpus doesn't contain is a broken task,
+and it reads as an agent failure forever without ever being one. And **every
+anomaly is paired with a near-identical case that should pass**: 06/07/08
+differ only in how far the invoice diverges from its PO, 02 and 03 only in
+whether the number matches exactly. Drop the pairs and an agent that escalates
+everything scores well, which is the one-sided optimization the suite exists to
+make impossible.
+
+### Did retrieval earn its place?
+
+The suite was run before and after `search_policy` was added. Nothing else
+changed.
 
 | | Baseline | With retrieval |
 |---|---|---|
@@ -131,15 +185,15 @@ added. Nothing else changed.
 | **unsafe approvals** | **3** | **0** |
 | tool coverage | 7 / 12 | **12 / 12** |
 
-The result that matters is the third row. At baseline the agent approved a
-$40,000 invoice with no purchase order on all three trials, at 0.80–0.82
-confidence — above the escalation floor, so no human would ever have seen it.
-Its reasoning was sound on its own terms: *"All applicable checks came back
-clean."* Every check it could run had passed. The rule it needed existed only
-in the policy.
+The result that matters is the third row. At baseline the agent approved case
+09's $40,000 invoice on all three trials, at 0.80–0.82 confidence — above the
+escalation floor, so no human would ever have seen it. Its reasoning was sound
+on its own terms: *"All applicable checks came back clean."* Every check it
+could run had passed. The rule it needed existed only in the policy.
 
-Full analysis, including the case that regressed and the one that turned out to
-be a broken task, is in [`finalResults.md`](finalResults.md).
+Full analysis — including case 04, which regressed as the predictable cost of
+fixing 09, and case 11, which turned out to be a broken task rather than an
+agent failure — is in [`finalResults.md`](finalResults.md).
 
 ---
 
