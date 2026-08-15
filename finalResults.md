@@ -148,3 +148,65 @@ Not done, and not required for the result above to stand:
 4. **Prompt caching.** The system prompt and tool definitions are byte-identical
    across every turn; cached reads cost about a tenth of full price and would cut the
    run cost substantially without changing a single decision.
+
+---
+
+# Re-run after the currency fix
+
+The comparison above was measured on the day the currency columns landed, and
+the recorded run predates them — the `get_purchase_order` output saved in
+`eval_results_with_rag.json` for case 11 carries no `po_currency`,
+`invoice_currency` or `currency_match` field at all. The suite was re-run
+against the current code, unchanged in every other respect, as
+`backend/eval_results_with_rag_v2.json`.
+
+| Metric | Baseline | With retrieval | Current |
+|---|---|---|---|
+| pass^3 | 9 / 12 | 10 / 12 | **11 / 12** |
+| pass@1 | 75% | 89% | **92%** |
+| policy-dependent (5) | 2/5 | 4/5 | **5/5** |
+| structured-only (7) | 7/7 | 6/7 | 6/7 |
+| **unsafe approvals** | **3** | **0** | **0** |
+| tool coverage | 7/12 | 12/12 | 12/12 |
+
+## Case 11 — the broken task, now fixed
+
+0/3 → **3/3**. Step 1 of "What would come next" above called for a currency
+column on `invoices` and `purchase_orders`; that is what changed.
+`get_purchase_order` now returns `po_currency: "EUR"`, `invoice_currency:
+"EUR"`, `currency_match: true`, so the agent can confirm it is comparing like
+with like instead of refusing a comparison it could not verify. The agent's
+original objection is worth restating, because it was correct: a 0.0% variance
+computed across unknown units is a false match, not a passed check.
+
+## Case 04 — now consistent rather than intermittent
+
+0.67 → **0.00**. All three trials escalate, at 0.68 confidence — below the
+floor, so the system would have forced escalation regardless of what the agent
+asked for.
+
+This reads as confirmation rather than regression. Previously the agent
+guessed, and happened to guess "approve" two times in three; it now reliably
+declines to guess. The reasoning is the same each time:
+
+> All the checks I could actually perform came back clean, but the one rule the
+> decision turns on cannot be verified with the tools available.
+
+§III defers the PO-required threshold to the UNFPA Procurement Procedures,
+which is not in the corpus, so nothing available to the agent establishes that
+$500 sits below it. Step 2 of "What would come next" asked whether case 04's
+expectation was what should change. It has deliberately been left as `approve`:
+rewriting an expected answer after watching it fail is how a suite stops
+measuring anything, and 11/12 with an explained miss is worth more than 12/12
+bought that way. The real fix is the missing document or an ERP integration
+exposing the requisition threshold — not a change to the agent or the case.
+
+## What did not improve
+
+Lucky guesses went 5 → 7, and cases 05, 11 and 12 are flagged ungrounded.
+At least one of those is the judge rather than the agent: on case 11 it marked
+the reasoning unsupported for saying an extracted `po_number` field was null,
+on the grounds that no such field appears in what it was shown. That is the
+judge misreading "the field is empty" as "the field does not exist". Step 3 —
+recalibrate the groundedness judge — remains open, and these numbers should not
+be cited until it is done.

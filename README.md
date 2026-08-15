@@ -154,7 +154,7 @@ measurement, not a defect.
 | 01 | `clean_approve` | approve | Baseline. Everything reconciles — does the happy path clear without manufactured caution? |
 | 02 | `exact_duplicate_reject` | reject | Same number *and* amount as a prior payment. A confirmed duplicate can be refused outright |
 | 03 | `near_duplicate_escalate` | escalate | Same amount, suffixed number (`INV-1` vs `INV-1-A`). Suspicious but not proven — belongs in front of a human, not refused |
-| 04 | `vendor_name_drift_approve` | approve | Invoice prints "Acme Inc"; the master file says "ACME Incorporated". Can it resolve a drifted name rather than treating it as unknown? |
+| 04 | `vendor_name_drift_approve` | approve | Invoice prints "Acme Inc"; the master file says "ACME Incorporated". Can it resolve a drifted name rather than treating it as unknown? *(The one failing case — see below)* |
 | 05 | `vendor_not_on_file_escalate` | escalate | A genuinely unknown payee. An unknown vendor is a stop, not a guess |
 | 06 | `po_variance_within_tolerance_approve` | approve | `policy` · $400 on a $6,000 PO. The lesser limit is 10% ($600), so this clears — the clean test that a rule was *read* rather than guessed |
 | 07 | `po_variance_outside_tolerance_escalate` | escalate | `policy` · $3,000 on a $20,000 PO — 15% and $3,000, outside both bounds. No reading of §II lets this through |
@@ -175,25 +175,54 @@ make impossible.
 
 ### Did retrieval earn its place?
 
-The suite was run before and after `search_policy` was added. Nothing else
-changed.
+The suite was first run before and after `search_policy` was added, with
+nothing else changed. It was re-run later against the current code, after the
+schema gained the currency columns that case 11 turned out to need.
 
-| | Baseline | With retrieval |
-|---|---|---|
-| pass^3 | 9 / 12 | **10 / 12** |
-| policy-dependent cases | 2 / 5 | **4 / 5** |
-| **unsafe approvals** | **3** | **0** |
-| tool coverage | 7 / 12 | **12 / 12** |
+| | Baseline | With retrieval | Current |
+|---|---|---|---|
+| pass^3 | 9 / 12 | 10 / 12 | **11 / 12** |
+| pass@1 | 75% | 89% | **92%** |
+| policy-dependent cases | 2 / 5 | 4 / 5 | **5 / 5** |
+| **unsafe approvals** | **3** | **0** | **0** |
+| tool coverage | 7 / 12 | 12 / 12 | **12 / 12** |
 
-The result that matters is the third row. At baseline the agent approved case
+The row that matters is unsafe approvals. At baseline the agent approved case
 09's $40,000 invoice on all three trials, at 0.80–0.82 confidence — above the
 escalation floor, so no human would ever have seen it. Its reasoning was sound
 on its own terms: *"All applicable checks came back clean."* Every check it
 could run had passed. The rule it needed existed only in the policy.
 
-Full analysis — including case 04, which regressed as the predictable cost of
-fixing 09, and case 11, which turned out to be a broken task rather than an
-agent failure — is in [`finalResults.md`](finalResults.md).
+**Case 11** moved 0/3 → 3/3 in the re-run. It was never an agent failure: with
+no currency column anywhere in the schema, a EUR invoice was compared against a
+currency-less purchase order as bare numerals, producing a meaningless "0.0%
+variance" that the agent correctly refused to treat as a passed check. The
+system could not represent the fact the case turned on. Adding the columns —
+and teaching `get_purchase_order` to report `currency_match` and decline to
+compute a variance across units — fixed it.
+
+**Case 04 is the remaining failure, and the agent is arguably right.** The case
+seeds a $500 invoice with a drifted vendor name and no purchase order, and
+expects `approve`. All three trials escalate instead. The reasoning is
+consistent and policy-grounded: §III routes non-PO payments down a separate,
+more controlled path and defers the "was a PO required at this amount?"
+threshold to the UNFPA Procurement Procedures — a document that is not in the
+corpus. So the agent declines to assert that $500 sits below a limit it cannot
+read, and says so explicitly rather than treating an unperformable check as a
+passed one.
+
+That is the same reasoning that eliminated all three unsafe approvals on case
+09; cases 04 and 09 differ only in amount. The expectation is left as `approve`
+rather than quietly rewritten to match the behaviour, so the suite reports
+11/12 — but the miss is the system escalating a no-PO invoice and naming the
+single reason why, which is a defensible outcome and a recoverable one. A
+reviewer loses a minute. Closing it properly means giving the agent the missing
+document or an ERP integration that exposes the requisition threshold, not
+tuning the agent.
+
+Full analysis of the original comparison is in
+[`finalResults.md`](finalResults.md). Raw data:
+`backend/eval_results_{baseline,with_rag,with_rag_v2}.json`.
 
 ---
 
