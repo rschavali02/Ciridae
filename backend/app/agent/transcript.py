@@ -59,6 +59,27 @@ class RunTranscript:
         self.confidence = confidence
         self.reasoning = reasoning
 
+    def _projection(self) -> dict:
+        """A point-in-time copy of the transcript, safe to assign to the row.
+
+        The copy is the load-bearing part, not housekeeping. Assigning a dict
+        that *references* `self.tool_calls` looks like a reassignment but does
+        not behave like one: the value SQLAlchemy holds as "old" is then the
+        same live list the next append mutates, so the old and new values
+        compare equal, the attribute is never marked dirty, and no UPDATE is
+        emitted.
+
+        That failed silently and cost the whole point of writing per call. The
+        first flush worked -- `begin` seeds a *different* empty list, so there
+        was something to differ from -- and every flush after it was a no-op,
+        leaving the ticker frozen on tool call one for the length of a run
+        while the agent went on to make six more.
+
+        A shallow copy of the list is enough: each entry is built once in
+        `record_tool_call` and never mutated afterwards.
+        """
+        return {"tool_calls": list(self.tool_calls), "reasoning": self.reasoning}
+
     async def _flush(self, session: AsyncSession) -> None:
         """Republish the in-memory transcript onto the row, if there is one."""
         if self._run is None:
@@ -67,9 +88,7 @@ class RunTranscript:
             # that does not want live visibility should not be made to fail for
             # passing a session.
             return
-        # Reassigned rather than mutated: SQLAlchemy does not track in-place
-        # changes to a JSONB dict, so appending to it leaves the column stale.
-        self._run.transcript = {"tool_calls": self.tool_calls, "reasoning": self.reasoning}
+        self._run.transcript = self._projection()
         await session.commit()
 
     async def save(self, session: AsyncSession) -> AgentRun:
@@ -81,7 +100,11 @@ class RunTranscript:
         self._run.status = "complete"
         self._run.decision = self.decision
         self._run.confidence = self.confidence
-        self._run.transcript = {"tool_calls": self.tool_calls, "reasoning": self.reasoning}
+        # Same copy as `_flush`, for the same reason. This one happens to survive
+        # without it -- `status` changing is enough to make the row dirty and drag
+        # the transcript along -- but relying on a sibling column to carry the
+        # write is exactly the accident that hid the bug in `_flush`.
+        self._run.transcript = self._projection()
 
         await session.commit()
         await session.refresh(self._run)
