@@ -120,6 +120,7 @@
     "file": "invoice_05.pdf",
     "vendor": "Stark Industries",
     "invoice_number": "INV-1004",
+    "po_number": "PO-77401",
     "date_issued": "2026-03-25",
     "due_date": "2026-03-28",
     "terms": "Due on receipt",
