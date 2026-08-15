@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from app.agent.runner import run_agent
-from app.config import settings
+from app.config import require_eval_database_url
 from app.eval.cases import CaseResult, EvalCase, TrialResult
 from app.models import Invoice, PurchaseOrder, Vendor
 
@@ -38,7 +38,13 @@ from app.models import Invoice, PurchaseOrder, Vendor
 #
 # The cost is one connection per trial, against a run that makes on the order of
 # a hundred model calls. It does not register.
-eval_engine = create_async_engine(settings.database_url, poolclass=NullPool)
+#
+# It also points at a *different database* from the application's. The rollback
+# below is what actually protects the rows, but it is the only thing protecting
+# them, and `DELETE FROM` every table is already written and runs 36 times a
+# run. A separate database means a refactor that breaks the transaction wrapper
+# empties a scratch database instead of the one holding the demo.
+eval_engine = create_async_engine(require_eval_database_url(), poolclass=NullPool)
 
 # Child tables first -- foreign keys point upward.
 _TABLES = (

@@ -9,5 +9,8 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      # Runs only on first creation of the volume above. On an existing volume
+      # the eval database has to be created by hand -- see README-eval-db.md.
+      - ./initdb:/docker-entrypoint-initdb.d:ro
 volumes:
   pgdata:

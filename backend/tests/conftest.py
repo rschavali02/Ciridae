@@ -4,7 +4,7 @@ from sqlalchemy import text
 from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
-from app.config import settings
+from app.config import require_eval_database_url
 from app.db import get_session
 from app.main import app
 from app.models import Invoice, PurchaseOrder, Vendor
@@ -17,7 +17,13 @@ from app.models import Invoice, PurchaseOrder, Vendor
 # loop, and asyncpg fails with "another operation is in progress" -- which looks
 # like a transaction bug but is really a loop-lifetime bug. NullPool opens and
 # closes a connection per checkout, so nothing outlives its loop.
-test_engine = create_async_engine(settings.database_url, poolclass=NullPool)
+#
+# Pointed at the eval database, not the application's. The fixture below empties
+# seven tables -- `documents` among them, which the eval harness pointedly does
+# not touch -- and only the outer rollback puts them back. That is a lot of trust
+# in one context manager for something that runs on every `pytest` invocation, so
+# the blast radius is moved to a database nothing else depends on.
+test_engine = create_async_engine(require_eval_database_url(), poolclass=NullPool)
 
 
 @pytest_asyncio.fixture
