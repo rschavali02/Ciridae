@@ -5,6 +5,66 @@ would: resolve the payee, check what they have been paid before, look for a
 duplicate, reconcile against the purchase order, and read the policy. Then it
 recommends approve, reject, or escalate, citing the clause it relied on.
 
+Building the right human-in-the-loop system is important, as you want the agent to help and summarize findings, but you want the human to be able to review any autonomous workflow relating to finances.
+
+## Where everything lives
+
+```
+backend/app/
+  agent/          The agent itself
+    prompts.py        system prompt
+    tools.py          what each tool actually does
+    runner.py         binds the tools to the SDK tool runner
+    transcript.py     the record of a run, read by the UI and the evals
+  eval/           The eval harness
+    suite.py          the twelve cases
+    cases.py          the EvalCase / TrialResult shapes
+    harness.py        runs one case, N trials, in an isolated database
+    graders.py        the four graders
+    report.py         entry point: runs the suite and writes the JSON
+  extraction/     PDF to structured fields
+    pipeline.py       text layer first, vision fallback if unusable
+    text_layer.py     pdfplumber, plus the usability check that trips the fallback
+    vision_fallback.py  Claude vision transcription for scans
+    fields.py         one structured-output call for the invoice fields
+  rag/            Policy retrieval
+    chunking.py       splits the policy on its own numbered headings
+    embeddings.py     Voyage client
+    store.py          embeds and stores chunks
+    search.py         cosine similarity over pgvector, top 5
+  main.py         All FastAPI endpoints (see the table below)
+  models.py       SQLAlchemy models, one per table
+
+backend/fixtures/
+  invoices/       Sample invoice PDFs, plus GROUND_TRUTH.json
+  policy/         The AP policy PDF that is chunked and embedded
+  load_policy.py  Chunks and embeds the policy corpus
+  seed_demo.py    Resets the database to a demo-ready state
+
+backend/tests/    130 tests
+frontend/src/     React dashboard: views/, components/, api.ts
+
+docs/plans/       How this was built: design and implementation docs
+```
+
+### API endpoints
+
+All of them live in `backend/app/main.py`.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/health` | Liveness check |
+| `POST` | `/invoices` | Upload a PDF. Returns `202`, then extraction and the agent run in the background |
+| `GET` | `/invoices` | The queue |
+| `GET` | `/invoices/{id}` | One invoice, with the full tool-call transcript |
+| `GET` | `/invoices/{id}/file` | The original PDF, for the preview |
+| `GET` | `/invoices/{id}/activity` | What the agent is doing right now. Polled about once a second |
+| `POST` | `/invoices/{id}/approve` | Human approval, with an optional note |
+| `POST` | `/invoices/{id}/reject` | Human rejection, with an optional note |
+| `GET` | `/audit-log` | Every human decision, newest first |
+| `GET` | `/vendors/pending` | Vendors the agent drafted, awaiting approval |
+| `POST` | `/vendors/{id}/approve` | Makes a drafted vendor payable |
+
 ## What it is for
 
 1. **Cut the number of invoices a human has to look at.** Invoices where every
@@ -14,9 +74,9 @@ recommends approve, reject, or escalate, citing the clause it relied on.
    one did not, and the policy clause that settled it. They start from a
    finding instead of a blank invoice.
 
-## The one thing it must never do
+## Error State to Avoid: Over Approving Invoices
 
-Wrongly approve an invoice. This is the worst error the system can make, and it
+Wrongly approving an invoice is the worst error the system can make, and it
 is a different kind of error from the others:
 
 - A wrongly **escalated** invoice costs a reviewer a minute. The next person to
@@ -28,69 +88,9 @@ Every design decision below resolves in that direction, and the eval suite
 scores wrongful approvals as their own number.
 
 Built on Claude with custom tools, a FastAPI and Postgres backend, a React
-dashboard, and an eval harness that measures whether any of it actually works.
+dashboard, and an eval harness that measures if the agent works.
 
 ---
-
-## The problem
-
-Accounts payable is high-volume, low-variance work with expensive tails. Most
-invoices are fine. A few are duplicates, a few do not match their purchase
-order, and occasionally one is a payee nobody has verified. The cost is not the
-thinking. It is that someone has to look at all of them to find the few that
-matter.
-
-That shape suits an LLM, and it also sets a trap. The obvious way to cut review
-volume is to approve more, which is precisely the wrong lever. A system that
-clears 95% of invoices by being agreeable is worse than one that clears 70% by
-being right, because the 5% it got wrong are the ones nobody will ever see
-again. Volume has to come down through checks that genuinely reconcile, never
-by lowering the bar.
-
-So the useful question is not "how many invoices did it clear?" It is "how many
-did it clear that it should not have?" That number is reported separately
-throughout, and it is the one worth arguing about.
-
-## The intuition
-
-Three ideas shaped this build. Each one is a constraint rather than a feature.
-
-### 1. The rules live in a document, not in the code
-
-The tolerance for an invoice-to-PO discrepancy is a business rule that Finance
-owns and revises. It belongs in the policy the agent retrieves, not in a
-constant somewhere in the repo. So `get_purchase_order` computes the variance,
-because percentage arithmetic is the sort of thing a model gets subtly wrong,
-and then deliberately refuses to judge it. Whether that variance is acceptable
-has to come from the policy.
-
-This is also what makes the retrieval measurable. An agent with the threshold
-hardcoded would pass the PO cases without ever consulting the policy, and the
-before-and-after comparison would measure nothing.
-
-### 2. Tools hand back conclusions, not tables
-
-Every tool returns a small, high-signal result rather than rows:
-
-- `get_invoice_history` returns a count, an average, and a range. It does not
-  return 200 invoices for the model to do arithmetic on.
-- `check_duplicate_invoice` separates an exact resubmission from a near match,
-  because the two call for different actions. A single boolean would collapse
-  that distinction and force the agent to guess which it was looking at.
-
-Some things are deliberately withheld. `lookup_vendor` does not return its
-similarity score. That score is calibrated against a distribution the agent
-cannot see, and in an early run the agent read a perfectly good 0.42 trigram
-match as weak evidence and cut its confidence because of it. Deciding whether a
-match clears the bar is the tool's job, and it is already done.
-
-### 3. The agent proposes, the system decides
-
-- A confidence floor overrides the agent's own recommendation below a
-  threshold, in both directions. A low-confidence rejection escalates too,
-  because stalling a legitimate payment carries its own cost.
-- No invoice is finalized by the agent at all. The only code path that changes
-  an invoice's status is the human approve/reject endpoint.
 
 ## How it works
 
@@ -174,10 +174,6 @@ you got:
 - **`overcautious`** is escalating something it could have decided.
 - **`over_refused`** is rejecting something legitimate.
 
-The last two are recoverable by the human who sees them next. Three needless
-escalations is a tuning problem. Three wrongful approvals is a system you
-cannot deploy.
-
 ### The twelve cases
 
 `policy` marks the cases whose correct answer exists only in the AP policy
@@ -210,7 +206,7 @@ Two rules govern the suite:
    Drop the pairs and an agent that escalates everything scores well, which is
    the one-sided optimization the suite exists to make impossible.
 
-### Incremental result improvement
+### Incremental Improvement from Evals
 
 The suite was first run before and after `search_policy` was added, with
 nothing else changed. It was re-run later against the current code, once the
@@ -246,23 +242,13 @@ and no purchase order, and expects `approve`. All three trials escalate.
 The drift itself resolves cleanly every time. `lookup_vendor` turns the printed
 "Acme Inc" into `ACME Incorporated` with `match: "resolved"` in all three
 trials, and the tool-coverage grader passes. The capability the case exists to
-test works. What decides the outcome is a second variable the case was never
-designed to probe. With no PO referenced, §III routes the invoice down the
+test works. What changed the outcome is the lack of purchase order. With no PO referenced, §III routes the invoice down the
 separate non-PO path and defers the question of whether a purchase order was
-*required* at this amount to the UNFPA Procurement Procedures, a document that
-is not in the corpus. So the agent declines to assert that $500 sits below a
+*required* at this amount to the UNFPA Procurement Procedures. So the agent declines to assert that $500 sits below a
 limit it cannot read, and says so explicitly rather than treating an
 unperformable check as a passed one.
 
-That is the same reasoning that eliminated all three unsafe approvals on case
-09, and cases 04 and 09 differ only in amount. The expectation is left as
-`approve` rather than quietly rewritten to match the behaviour, so the suite
-reports 11/12. Read as a statement about the agent, though, the case is
-reassuring rather than damning: the vendor resolution passes, and the
-escalation names the single reason it happened, which is exactly what a
-reviewer needs. Closing it properly means splitting the two variables apart, by
-giving the drift case a PO so that it tests only the name, or supplying the
-missing document. It does not mean tuning the agent.
+In this case, the result makes sense as the vendor drift test passed, but an invoice should be flagged if it is a high value without a purchase order. Having that agent explain that this is the only reason the invoice was flagged makes it easier for the human to verify the output. 
 
 Full analysis of the original comparison is in
 [`finalResults.md`](finalResults.md). Raw data lives in
@@ -363,24 +349,13 @@ cd backend && python -m fixtures.seed_demo
 
 ---
 
-## Layout
+## Further reading
 
-```
-backend/
-  app/
-    agent/          prompts, tool implementations, the SDK tool runner, transcripts
-    eval/           cases, suite, harness, graders, report
-    rag/            chunking, embeddings, storage, search
-    main.py         FastAPI routes
-    models.py       SQLAlchemy models
-  fixtures/         policy PDF, sample invoices, seed and load scripts
-  tests/
-frontend/src/       React dashboard
-```
+The file layout is at the top of this README, under
+[Where everything lives](#where-everything-lives).
 
-Further reading:
-
-- [`Project.MD`](Project.MD): the design document
+- [`Project.MD`](Project.MD): the design document written before the build
+- [`docs/plans/`](docs/plans): the implementation plans the build followed
 - [`finalResults.md`](finalResults.md): the before-and-after retrieval measurement
 - [`architecture-tradeoffs.md`](architecture-tradeoffs.md): design decisions and what each one costs
 - [`backend/README-eval-db.md`](backend/README-eval-db.md): why the tests and evals use a separate database
