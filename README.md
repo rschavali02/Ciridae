@@ -206,10 +206,9 @@ seeds a $500 invoice with a drifted vendor name and no purchase order, and
 expects `approve`. All three trials escalate instead. The reasoning is
 consistent and policy-grounded: §III routes non-PO payments down a separate,
 more controlled path and defers the "was a PO required at this amount?"
-threshold to the UNFPA Procurement Procedures — a document that is not in the
-corpus. So the agent declines to assert that $500 sits below a limit it cannot
+threshold to the UNFPA Procurement Procedures. So the agent declines to assert that $500 sits below a limit it cannot
 read, and says so explicitly rather than treating an unperformable check as a
-passed one.
+passed one. The previous tests show that vendor drift is fine, so this eval makes sense.
 
 That is the same reasoning that eliminated all three unsafe approvals on case
 09; cases 04 and 09 differ only in amount. The expectation is left as `approve`
