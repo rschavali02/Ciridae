@@ -1,2 +1,7 @@
 .DS_Store
 .overnight/
+
+# Working notes and demo runbook -- local only.
+thoughts.md
+mermaid.md
+demo.md

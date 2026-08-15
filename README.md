@@ -97,11 +97,6 @@ endpoint.
 <!-- Replace with the architecture diagram. -->
 ![Architecture](docs/images/architecture.png)
 
-<!--
-  Eval pipeline diagrams (flowchart + sequence) live in mermaid.md and render
-  directly on GitHub.
--->
-
 **Stack**
 
 | Layer | |
@@ -260,5 +255,4 @@ Further reading:
 - [`Project.MD`](Project.MD) — the design document
 - [`finalResults.md`](finalResults.md) — the before/after retrieval measurement
 - [`architecture-tradeoffs.md`](architecture-tradeoffs.md) — design decisions and what each one costs
-- [`mermaid.md`](mermaid.md) — eval pipeline diagrams
-- [`demo.md`](demo.md) — the demo runbook
+- [`backend/README-eval-db.md`](backend/README-eval-db.md) — why the tests and evals use a separate database
