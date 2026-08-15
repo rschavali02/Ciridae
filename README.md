@@ -5,6 +5,23 @@ would — resolve the payee, check what they've been paid before, look for a
 duplicate, reconcile against the purchase order, and read the policy — then
 recommends approve, reject, or escalate, citing the clause it relied on.
 
+**It is built to do two things.** The first is to cut the number of invoices a
+human has to look at, by clearing the ones where every check reconciles. The
+second matters just as much: for the invoices it *does* send to a person, it
+hands over the reasoning that produced the escalation — which checks passed,
+which one didn't, and the policy clause that decided it — so the reviewer
+starts from a finding rather than from a blank invoice. Fewer invoices to
+review, and a faster, better-informed decision on each of the ones that remain.
+
+**Never over-approving is the hard constraint.** Wrongly approving an invoice
+is the worst thing this system can do, and it is not merely worse than the
+alternative — it is a different kind of error. An invoice wrongly escalated
+costs a reviewer a minute and is caught by the next person who looks at it. An
+invoice wrongly approved is money out the door with nobody watching, and
+nothing downstream catches it, because being approved is precisely what stops
+anyone from looking. Every design decision below resolves in that direction,
+and the eval suite scores wrongful approvals separately for the same reason.
+
 Built on Claude with custom tools, a FastAPI + Postgres backend, a React
 dashboard, and an eval harness that measures whether any of it actually works.
 
@@ -18,11 +35,16 @@ order, and occasionally one is a payee nobody has verified. The cost of the
 work isn't the thinking — it's that someone has to look at all of them to find
 the few that matter.
 
-That shape suits an LLM, with one catch that decides the whole design: **the
-failure modes are not symmetric.** An invoice wrongly escalated costs a
-reviewer a minute. An invoice wrongly approved is money out the door with
-nobody watching. Any system here is only as good as its behavior on the second
-kind.
+That shape suits an LLM, and it also sets the trap. The obvious way to cut
+review volume is to approve more, and the asymmetry above means that is exactly
+the wrong lever: a system that clears 95% of invoices by being agreeable is
+worse than one that clears 70% by being right, because the 5% it got wrong are
+the ones nobody will ever see again. Volume reduction has to come from checks
+that genuinely reconcile — never from lowering the bar.
+
+So the useful question is not "how many invoices did it clear?" but "how many
+did it clear that it should not have?" That number is reported separately
+throughout, and it is the one worth arguing about.
 
 ## The intuition
 
