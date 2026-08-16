@@ -254,6 +254,31 @@ Full analysis of the original comparison is in
 [`finalResults.md`](finalResults.md). Raw data lives in
 `backend/eval_results_{baseline,with_rag,with_rag_v2}.json`.
 
+### Why Opus, measured
+
+The suite was re-run against Claude Sonnet 5 with everything else held fixed —
+same cases, same retrieval, judge moved to Opus so it was not grading its own
+model.
+
+| | Opus 5 | Sonnet 5 |
+|---|---|---|
+| pass^3 | 11 / 12 | 11 / 12 |
+| pass@1 | 92% | 94% |
+| **unsafe approvals** | **0** | **2** |
+
+The scores tie; the failures do not. Opus's one failure is case 04, escalating
+a drifted vendor name it could have approved. Sonnet passes case 04 and instead
+approves case 09 — the $40,000 invoice with no PO — on two of three trials, at
+confidence 0.78 and 0.72. Both cleared the 0.7 floor. It called `search_policy`
+in every trial, so this is not a retrieval gap: it read the policy and approved
+anyway, on the same "every check came back clean" reasoning as the pre-retrieval
+baseline.
+
+One trait, two signs. Sonnet resolves ambiguity toward acting, which is right on
+04 and dangerous on 09. Given that a wrongful approval is the error nothing
+downstream catches, the caution is the thing worth paying for. Raw data in
+`backend/eval_results_sonnet5.json`.
+
 ---
 
 ## Setup
