@@ -6,7 +6,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Uplo
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.runner import run_agent
@@ -71,6 +71,11 @@ async def apply_extraction(session: AsyncSession, invoice: Invoice) -> Invoice:
     fields = result.fields
 
     invoice.raw_text = result.raw_text
+    # Written unconditionally, before anything tries to resolve it. Recording
+    # the payee only when `lookup_vendor` succeeds would leave exactly the
+    # invoices that need labelling -- unknown payees, ambiguous ones, scans too
+    # poor to resolve -- with no record of who they claim to be from.
+    invoice.extracted_vendor_name = fields.vendor_name
     invoice.invoice_number = fields.invoice_number
     invoice.amount = fields.amount
     # Upper-cased here rather than trusted: `invoices.currency` is
@@ -160,15 +165,19 @@ async def latest_runs(session: AsyncSession, invoice_ids: list[uuid.UUID]) -> di
 def payee_name(invoice: Invoice, vendor: Vendor | None, run: AgentRun | None) -> str | None:
     """The best available label for who this invoice is from.
 
-    `invoices` has no vendor name of its own -- only `vendor_id`, which is set
-    once a payee resolves to a row in the vendor master. Until then the only
-    record of who the invoice claims to be from is the name the agent handed to
-    `lookup_vendor`, so that is the fallback. It is what the document said, not
-    a verified identity, and an unresolved payee is precisely the case the queue
-    most needs to label.
+    A resolved vendor wins, because that is a verified identity rather than a
+    claim. Failing that, `extracted_vendor_name` is what the document printed,
+    which is exactly the case the queue most needs to label: an unresolved payee.
+
+    The transcript is still read as a last resort, for rows written before
+    `extracted_vendor_name` existed. Those carry no name of their own, and the
+    only surviving record of who they claimed to be from is the argument the
+    agent passed to `lookup_vendor`.
     """
     if vendor is not None:
         return vendor.name
+    if invoice.extracted_vendor_name:
+        return invoice.extracted_vendor_name
     if run is None:
         return None
     for call in run.transcript.get("tool_calls", []):
@@ -521,14 +530,53 @@ async def list_pending_vendors(session: AsyncSession = Depends(get_session)):
 
 @app.post("/vendors/{vendor_id}/approve")
 async def approve_vendor(vendor_id: uuid.UUID, session: AsyncSession = Depends(get_session)):
-    """Make a drafted payee payable. Nothing else does -- see `lookup_vendor`,
-    which only resolves `active` vendors."""
+    """Make a drafted payee payable, and adopt the invoices that were waiting on
+    them.
+
+    Nothing else makes a payee payable -- see `lookup_vendor`, which only
+    resolves `active` vendors.
+
+    The back-link is the other half. An invoice that arrived before its vendor
+    existed was left with `vendor_id` NULL, because the name resolved to
+    nothing at the time. It stays that way for good unless something adopts it,
+    and an orphaned invoice is invisible to both checks that filter on the
+    vendor: it never counts toward that payee's history, and a resubmission of
+    it can never be matched as a duplicate. So a vendor's first invoice would
+    silently never exist, and their second would still read as a first-time
+    payee.
+
+    Matched on the normalized printed name rather than by similarity. A wrong
+    adoption attributes someone else's payment to this vendor and quietly
+    corrupts the baseline the anomaly check reads, which is worse than leaving a
+    row orphaned. Exact-normalized is the conservative half of that trade: it
+    catches the ordinary case, where the draft was created from this very name.
+    """
     vendor = await session.get(Vendor, vendor_id)
     if vendor is None:
         raise HTTPException(status_code=404, detail=f"No vendor {vendor_id}")
 
     vendor.approval_status = "active"
+
+    adopted = (
+        await session.execute(
+            update(Invoice)
+            .where(
+                Invoice.vendor_id.is_(None),
+                func.lower(func.trim(Invoice.extracted_vendor_name)) == vendor.normalized_name,
+            )
+            .values(vendor_id=vendor.id)
+        )
+    ).rowcount
+
+    # One commit for the status change and the adoptions together. Splitting
+    # them would allow a vendor to become payable while its invoices stayed
+    # orphaned, which is the exact state this endpoint exists to clear.
     await session.commit()
     await session.refresh(vendor)
 
-    return {"id": str(vendor.id), "name": vendor.name, "approval_status": vendor.approval_status}
+    return {
+        "id": str(vendor.id),
+        "name": vendor.name,
+        "approval_status": vendor.approval_status,
+        "invoices_linked": adopted,
+    }

@@ -101,6 +101,20 @@ class Invoice(Base):
     __tablename__ = "invoices"
     id: Mapped[uuid.UUID] = uuid_pk()
     vendor_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("vendors.id"), nullable=True)
+    # The payee exactly as the document printed it, written at extraction time.
+    #
+    # `vendor_id` is only set once a name resolves to an *active* row in the
+    # vendor master, so an invoice from an unknown payee carries none. Without
+    # this column that invoice records nowhere who it claims to be from: the
+    # name survives only inside `raw_text` and the agent's transcript, so the
+    # row is orphaned from its vendor for good, invisible to every history and
+    # duplicate check, and it never joins that vendor's history even after a
+    # human approves them.
+    #
+    # Unverified by construction. It is what the document said, not who the
+    # payment is going to, and nothing may treat it as an identity -- that is
+    # what `vendor_id` is for.
+    extracted_vendor_name: Mapped[str] = mapped_column(String, nullable=True)
     invoice_number: Mapped[str] = mapped_column(String, nullable=True)
     amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=True)
     # ISO 4217, uppercase-constrained, for the reasons set out on
