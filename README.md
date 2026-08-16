@@ -63,7 +63,7 @@ All of them live in `backend/app/main.py`.
 | `POST` | `/invoices/{id}/reject` | Human rejection, with an optional note |
 | `GET` | `/audit-log` | Every human decision, newest first |
 | `GET` | `/vendors/pending` | Vendors the agent drafted, awaiting approval |
-| `POST` | `/vendors/{id}/approve` | Makes a drafted vendor payable |
+| `POST` | `/vendors/{id}/approve` | Makes a drafted vendor payable, and adopts the invoices that were waiting on them |
 
 ## What it is for
 
@@ -116,9 +116,9 @@ dashboard, the audit log, and the eval harness.
 | Tool | What it answers |
 |---|---|
 | `lookup_vendor` | Is this payee on file? Resolves printed names by trigram similarity |
-| `draft_vendor` | Queues an unknown payee for human approval. Does not make it payable |
-| `get_invoice_history` | Is this amount normal for them? Aggregates only |
-| `check_duplicate_invoice` | Have we already paid this? Separates exact from near |
+| `draft_vendor` | Queues an unknown payee as `pending_approval`, keeping the id a human approval later flips to `active`. Does not make it payable |
+| `get_invoice_history` | Is this amount normal for them? Aggregates only, priced from approved invoices alone |
+| `check_duplicate_invoice` | Have we already paid this, or already refused it? Separates `exact`, `near` and `previously_rejected` |
 | `get_purchase_order` | How far does this diverge from the PO? Reports variance, never a verdict |
 | `search_policy` | What do the written rules say? Returns clauses with their section, so they can be cited |
 | `submit_recommendation` | Records the decision, subject to the confidence floor |
