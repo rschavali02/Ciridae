@@ -108,11 +108,17 @@ def build_tools(session: AsyncSession, transcript: RunTranscript, invoice: Invoi
     async def check_duplicate_invoice(
         vendor_id: str, amount: float, invoice_number: str | None = None
     ) -> str:
-        """Check whether this vendor has already been paid for this invoice.
+        """Check whether this invoice has already been paid, or already refused.
 
-        Call this on every invoice before approving. Reports an exact match
-        (identical number and amount) separately from a near match, because the
-        two warrant different responses.
+        Call this on every invoice before approving. Returns one of four matches,
+        because each warrants a different response:
+
+        - "exact": identical invoice number and amount already paid.
+        - "near": a prior payment closely resembles this invoice.
+        - "previously_rejected": no payment, but a reviewer already refused this
+          invoice or one closely resembling it. That decision stands unless
+          something has changed, and this tool cannot see why it was made.
+        - "none": nothing on file resembles it.
 
         Args:
             vendor_id: Vendor id returned by lookup_vendor.

@@ -294,13 +294,19 @@ async def check_duplicate_invoice(
     invoice_number: str | None = None,
     exclude_invoice_id: uuid.UUID | None = None,
 ) -> dict:
-    """Check whether this vendor has already been paid for this invoice.
+    """Check whether this invoice has already been paid, or already refused.
 
     Distinguishes `exact` from `near`, because the two demand different
     actions: an exact re-submission is a confirmed duplicate and can be
     rejected, while a near match is only suspicious and belongs in front of a
     human. A single boolean would collapse that distinction and force the agent
     to guess which it was looking at.
+
+    `previously_rejected` answers a third question, and one the tool used to be
+    blind to. A refused invoice is not a payment and so cannot be duplicated,
+    which is why it was excluded -- but that meant resubmitting a rejected
+    invoice unchanged came back clean, and the standing decision of the person
+    who refused it was invisible to the agent reviewing it again.
 
     `exclude_invoice_id` keeps the invoice under review from matching itself.
     It is bound by the caller rather than supplied by the model -- the agent has
@@ -311,20 +317,16 @@ async def check_duplicate_invoice(
     if invoice_number:
         resembles.append(Invoice.invoice_number == invoice_number)
 
-    stmt = select(Invoice).where(
-        Invoice.vendor_id == vendor_id,
-        # "Already paid", not "already seen" -- a rejected invoice was never a
-        # payment, so it cannot be the thing this one duplicates.
-        Invoice.status == "approved",
-        or_(*resembles),
-    )
-    if exclude_invoice_id is not None:
-        stmt = stmt.where(Invoice.id != exclude_invoice_id)
+    def _candidates(status: str):
+        stmt = select(Invoice).where(
+            Invoice.vendor_id == vendor_id,
+            Invoice.status == status,
+            or_(*resembles),
+        )
+        if exclude_invoice_id is not None:
+            stmt = stmt.where(Invoice.id != exclude_invoice_id)
+        return stmt
 
-    candidates = (await session.execute(stmt)).scalars().all()
-
-    if not candidates:
-        return {"match": "none", "detail": "No prior payment to this vendor resembles it."}
     def _is_exact(prior: Invoice) -> bool:
         return (
             invoice_number is not None
@@ -332,23 +334,69 @@ async def check_duplicate_invoice(
             and float(prior.amount) == amount
         )
 
-    prior = next((c for c in candidates if _is_exact(c)), None)
-    match = "exact" if prior is not None else "near"
-    if prior is None:
-        prior = candidates[0]
+    # Paid invoices are checked first and reported unchanged. Money already out
+    # the door is the more serious finding, so a prior payment outranks a prior
+    # refusal when both exist.
+    paid = (await session.execute(_candidates("approved"))).scalars().all()
+
+    if paid:
+        prior = next((c for c in paid if _is_exact(c)), None)
+        match = "exact" if prior is not None else "near"
+        if prior is None:
+            prior = paid[0]
+
+        return {
+            "match": match,
+            "detail": (
+                "Identical invoice number and amount already paid."
+                if match == "exact"
+                else "A prior payment to this vendor closely resembles this invoice."
+            ),
+            "prior_invoice": {
+                "invoice_number": prior.invoice_number,
+                "amount": float(prior.amount) if prior.amount is not None else None,
+                "paid_on": prior.created_at.isoformat() if prior.created_at else None,
+            },
+        }
+
+    # Nothing was paid, so ask the other question: has a person already refused
+    # this? Previously the answer was unreachable, and a rejected invoice
+    # resubmitted unchanged came back "none" -- the agent re-reasoned from
+    # scratch with no idea a human had already declined it, and could approve
+    # what was refused last week. Reported under its own match rather than as a
+    # duplicate, because nothing was duplicated: the finding is the standing
+    # decision, not a second payment.
+    refused = (await session.execute(_candidates("rejected"))).scalars().all()
+
+    if refused:
+        prior = next((c for c in refused if _is_exact(c)), None)
+        identical = prior is not None
+        if prior is None:
+            prior = refused[0]
+
+        return {
+            "match": "previously_rejected",
+            "detail": (
+                (
+                    "An identical invoice from this vendor was already rejected by a "
+                    "reviewer."
+                    if identical
+                    else "An invoice from this vendor closely resembling this one was "
+                    "already rejected by a reviewer."
+                )
+                + " Treat that decision as standing unless something has changed;"
+                " it was made by a person, and this tool cannot see why."
+            ),
+            "prior_invoice": {
+                "invoice_number": prior.invoice_number,
+                "amount": float(prior.amount) if prior.amount is not None else None,
+                "rejected_on": prior.created_at.isoformat() if prior.created_at else None,
+            },
+        }
 
     return {
-        "match": match,
-        "detail": (
-            "Identical invoice number and amount already paid."
-            if match == "exact"
-            else "A prior payment to this vendor closely resembles this invoice."
-        ),
-        "prior_invoice": {
-            "invoice_number": prior.invoice_number,
-            "amount": float(prior.amount) if prior.amount is not None else None,
-            "paid_on": prior.created_at.isoformat() if prior.created_at else None,
-        },
+        "match": "none",
+        "detail": "No prior payment or rejection from this vendor resembles it.",
     }
 
 

@@ -338,6 +338,41 @@ async def test_flags_a_near_duplicate_with_a_suffixed_number(db_session, seeded_
 
 
 @pytest.mark.asyncio
+async def test_flags_an_invoice_a_reviewer_already_rejected(db_session, seeded_vendor):
+    """Resubmitting a refused invoice used to come back clean.
+
+    A rejected invoice is not a payment, so it cannot be duplicated, and it was
+    excluded on those grounds. The effect was that an invoice a person had
+    already declined could be uploaded again unchanged, report "none", and be
+    re-reasoned from scratch by an agent with no idea of the standing decision.
+    """
+    db_session.add(_refused(seeded_vendor, 500.0, invoice_number="INV-1"))
+    await db_session.commit()
+
+    result = await check_duplicate_invoice(
+        db_session, vendor_id=str(seeded_vendor.id), amount=500.0, invoice_number="INV-1"
+    )
+
+    assert result["match"] == "previously_rejected"
+    assert result["prior_invoice"]["invoice_number"] == "INV-1"
+
+
+@pytest.mark.asyncio
+async def test_a_prior_payment_outranks_a_prior_rejection(db_session, seeded_vendor):
+    """Money already out the door is the more serious finding of the two, so an
+    approved match must not be masked by a rejected one."""
+    db_session.add(_refused(seeded_vendor, 500.0, invoice_number="INV-1"))
+    db_session.add(_paid(seeded_vendor, 500.0, invoice_number="INV-1"))
+    await db_session.commit()
+
+    result = await check_duplicate_invoice(
+        db_session, vendor_id=str(seeded_vendor.id), amount=500.0, invoice_number="INV-1"
+    )
+
+    assert result["match"] == "exact"
+
+
+@pytest.mark.asyncio
 async def test_flags_a_reused_number_with_a_changed_amount(db_session, seeded_vendor):
     """Same invoice number, different amount -- an altered-invoice pattern."""
     db_session.add(_paid(seeded_vendor, 500.0, invoice_number="INV-1"))
