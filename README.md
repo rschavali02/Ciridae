@@ -16,6 +16,22 @@ Building the right human-in-the-loop system is important, as you want the agent 
    one did not, and the policy clause that settled it. They start from a
    finding instead of a blank invoice.
 
+## Error State to Avoid: Over Approving Invoices
+
+Wrongly approving an invoice is the worst error the system can make, and it
+is a different kind of error from the others:
+
+- A wrongly **escalated** invoice costs a reviewer a minute. The next person to
+  look at it catches the mistake.
+- A wrongly **approved** invoice is money out the door. Nothing downstream
+  catches it, because being approved is exactly what stops anyone from looking.
+
+Every design decision below resolves in that direction, and the eval suite
+scores wrongful approvals as their own number.
+
+Built on Claude with custom tools, a FastAPI and Postgres backend, a React
+dashboard, and an eval harness that measures if the agent works.
+
 ## Where everything lives
 
 ```
@@ -73,22 +89,6 @@ All of them live in `backend/app/main.py`.
 | `GET` | `/audit-log` | Every human decision, newest first |
 | `GET` | `/vendors/pending` | Vendors the agent drafted, awaiting approval |
 | `POST` | `/vendors/{id}/approve` | Makes a drafted vendor payable, and adopts the invoices that were waiting on them |
-
-## Error State to Avoid: Over Approving Invoices
-
-Wrongly approving an invoice is the worst error the system can make, and it
-is a different kind of error from the others:
-
-- A wrongly **escalated** invoice costs a reviewer a minute. The next person to
-  look at it catches the mistake.
-- A wrongly **approved** invoice is money out the door. Nothing downstream
-  catches it, because being approved is exactly what stops anyone from looking.
-
-Every design decision below resolves in that direction, and the eval suite
-scores wrongful approvals as their own number.
-
-Built on Claude with custom tools, a FastAPI and Postgres backend, a React
-dashboard, and an eval harness that measures if the agent works.
 
 ---
 
@@ -266,17 +266,31 @@ model.
 | pass@1 | 92% | 94% |
 | **unsafe approvals** | **0** | **2** |
 
-The scores tie; the failures do not. Opus's one failure is case 04, escalating
-a drifted vendor name it could have approved. Sonnet passes case 04 and instead
-approves case 09 — the $40,000 invoice with no PO — on two of three trials, at
-confidence 0.78 and 0.72. Both cleared the 0.7 floor. It called `search_policy`
-in every trial, so this is not a retrieval gap: it read the policy and approved
-anyway, on the same "every check came back clean" reasoning as the pre-retrieval
-baseline.
+The scores tie, and Sonnet's two points of pass@1 are partial credit on the case
+it fails: one of three trials on case 09, against Opus's none of three on case
+04. The failures are what separate them. Opus's is case 04, escalating a $500
+invoice it could have approved — graded `overcautious`, a minute of a reviewer's
+time. Sonnet's is case 09, the $40,000 invoice with no PO, approved on two of
+three trials at confidence 0.78 and 0.72. Both cleared the 0.7 floor. It called
+`search_policy` every time, so this is not a retrieval gap: it read the policy
+and approved anyway, on the same "every check came back clean" reasoning as the
+pre-retrieval baseline.
 
-One trait, two signs. Sonnet resolves ambiguity toward acting, which is right on
-04 and dangerous on 09. Given that a wrongful approval is the error nothing
-downstream catches, the caution is the thing worth paying for. Raw data in
+Those two cases are the same scenario at two amounts — an invoice with no PO,
+where §III defers the PO-required threshold to a document outside the corpus.
+Nothing available to the agent separates $500 from $40,000, and neither model
+tries to:
+
+| | 04 · $500 · expect approve | 09 · $40,000 · expect escalate |
+|---|---|---|
+| Opus 5 | escalate ×3 | escalate ×3 |
+| Sonnet 5 | approve ×3 | escalate, approve, approve |
+
+Each holds one bias across both. The suite scores whichever bias happens to
+match the case, so the pair measures not capability but which way a model errs
+when the governing rule cannot be read. Opus errs toward escalation, Sonnet
+toward approval. Given that a wrongful approval is the error nothing downstream
+catches, the caution is the thing worth paying for. Raw data in
 `backend/eval_results_sonnet5.json`.
 
 ---
