@@ -374,5 +374,5 @@ The file layout is at the top of this README, under
 - [`Project.MD`](Project.MD): the design document written before the build
 - [`docs/plans/`](docs/plans): the implementation plans the build followed
 - [`finalResults.md`](finalResults.md): the before-and-after retrieval measurement
-- [`architecture-tradeoffs.md`](architecture-tradeoffs.md): design decisions and what each one costs
 - [`backend/README-eval-db.md`](backend/README-eval-db.md): why the tests and evals use a separate database
+- [`AI-Agent-Evals.md`](AI-Agent-Evals.md): notes on Anthropic's eval-harness design, which framed how the suite here was built
