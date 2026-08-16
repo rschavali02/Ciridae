@@ -28,6 +28,17 @@ def _paid(vendor, amount, **kwargs):
     )
 
 
+def _refused(vendor, amount, **kwargs):
+    """An invoice a reviewer rejected -- on file, never paid."""
+    return Invoice(
+        vendor_id=vendor.id,
+        amount=amount,
+        status="rejected",
+        raw_pdf_path="historical.pdf",
+        **kwargs,
+    )
+
+
 # --- lookup_vendor ---------------------------------------------------------
 
 
@@ -267,6 +278,33 @@ async def test_respects_the_lookback_window(db_session, seeded_vendor):
 
 
 # --- check_duplicate_invoice -----------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_counts_rejections_without_pricing_them(db_session, seeded_vendor):
+    """Refused amounts must not reach the average or the range.
+
+    The reason is adversarial rather than tidiness. If they counted, a payee
+    could train the baseline: submit 50,000 repeatedly, have it refused
+    repeatedly, and the figure now sits inside the vendor's usual range so the
+    next attempt reads as unremarkable. The count is still reported, because
+    "this vendor has been refused before" is real signal about the payee. It is
+    simply a different question from "what do we normally pay them".
+    """
+    for amount in (900.0, 1000.0, 1100.0):
+        db_session.add(_paid(seeded_vendor, amount))
+    db_session.add(_refused(seeded_vendor, 50_000.0))
+    db_session.add(_refused(seeded_vendor, 50_000.0))
+    await db_session.commit()
+
+    result = await get_invoice_history(db_session, vendor_id=str(seeded_vendor.id))
+
+    assert result["rejected_count"] == 2
+    # The 50,000s are absent from every amount figure, so a subsequent 50,000
+    # still reads as far outside this vendor's range.
+    assert result["count"] == 3
+    assert result["average_amount"] == pytest.approx(1000.0)
+    assert result["max_amount"] == pytest.approx(1100.0)
 
 
 @pytest.mark.asyncio

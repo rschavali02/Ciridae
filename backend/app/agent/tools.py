@@ -230,23 +230,39 @@ async def get_invoice_history(
     cannot tell a tight spend pattern from a wildly variable one, so on its own
     it is a weak basis for calling an amount anomalous.
 
-    Only `approved` invoices count. History means what we have actually paid --
-    counting the pending invoice under review would fold it into its own
-    baseline and shrink the very anomaly the agent is looking for.
+    Only `approved` invoices feed the amount figures. History means what we have
+    actually paid -- counting the pending invoice under review would fold it
+    into its own baseline and shrink the very anomaly the agent is looking for.
+
+    Rejected invoices are deliberately kept out of the average and the range,
+    and the reason is adversarial rather than tidiness. If refused amounts
+    counted toward "normal", a payee could train the baseline: submit $50,000
+    three times, have it refused three times, and the figure now sits inside
+    the vendor's usual range so the fourth attempt reads as unremarkable.
+
+    They are still reported, as a bare count. "Three invoices from this vendor
+    were refused in the last year" is a real signal about the payee, it is just
+    a different question from "what do we normally pay them", and mixing the two
+    would let the first answer corrupt the second.
     """
     since = datetime.now(timezone.utc) - timedelta(days=lookback_days)
 
-    count, avg_amount, min_amount, max_amount, most_recent = (
+    # FILTER rather than a WHERE, because the two statuses are now aggregated
+    # over different subsets of the same rows and a WHERE could only express one
+    # of them. One pass over the vendor's invoices either way.
+    approved = Invoice.status == "approved"
+
+    count, avg_amount, min_amount, max_amount, most_recent, rejected_count = (
         await session.execute(
             select(
-                func.count(Invoice.id),
-                func.avg(Invoice.amount),
-                func.min(Invoice.amount),
-                func.max(Invoice.amount),
-                func.max(Invoice.created_at),
+                func.count(Invoice.id).filter(approved),
+                func.avg(Invoice.amount).filter(approved),
+                func.min(Invoice.amount).filter(approved),
+                func.max(Invoice.amount).filter(approved),
+                func.max(Invoice.created_at).filter(approved),
+                func.count(Invoice.id).filter(Invoice.status == "rejected"),
             ).where(
                 Invoice.vendor_id == vendor_id,
-                Invoice.status == "approved",
                 Invoice.created_at >= since,
             )
         )
@@ -265,6 +281,9 @@ async def get_invoice_history(
         "min_amount": _as_float(min_amount),
         "max_amount": _as_float(max_amount),
         "most_recent_date": most_recent.isoformat() if most_recent else None,
+        # Counted, never priced. See the note above on why the amounts are left
+        # out of the figures above.
+        "rejected_count": rejected_count or 0,
     }
 
 
