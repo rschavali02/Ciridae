@@ -7,6 +7,15 @@ recommends approve, reject, or escalate, citing the clause it relied on.
 
 Building the right human-in-the-loop system is important, as you want the agent to help and summarize findings, but you want the human to be able to review any autonomous workflow relating to finances.
 
+## What it is for
+
+1. **Cut the number of invoices a human has to look at.** Invoices where every
+   check reconciles are cleared without a person reading them.
+2. **Make the remaining ones faster to decide.** When an invoice is escalated,
+   the reviewer is handed the reasoning behind it: which checks passed, which
+   one did not, and the policy clause that settled it. They start from a
+   finding instead of a blank invoice.
+
 ## Where everything lives
 
 ```
@@ -64,15 +73,6 @@ All of them live in `backend/app/main.py`.
 | `GET` | `/audit-log` | Every human decision, newest first |
 | `GET` | `/vendors/pending` | Vendors the agent drafted, awaiting approval |
 | `POST` | `/vendors/{id}/approve` | Makes a drafted vendor payable, and adopts the invoices that were waiting on them |
-
-## What it is for
-
-1. **Cut the number of invoices a human has to look at.** Invoices where every
-   check reconciles are cleared without a person reading them.
-2. **Make the remaining ones faster to decide.** When an invoice is escalated,
-   the reviewer is handed the reasoning behind it: which checks passed, which
-   one did not, and the policy clause that settled it. They start from a
-   finding instead of a blank invoice.
 
 ## Error State to Avoid: Over Approving Invoices
 
