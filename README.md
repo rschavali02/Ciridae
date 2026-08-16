@@ -41,7 +41,7 @@ backend/fixtures/
   load_policy.py  Chunks and embeds the policy corpus
   seed_demo.py    Resets the database to a demo-ready state
 
-backend/tests/    130 tests
+backend/tests/    135 tests
 frontend/src/     React dashboard: views/, components/, api.ts
 
 docs/plans/       How this was built: design and implementation docs
@@ -313,6 +313,23 @@ happening.
 Check it with `curl localhost:8000/health`, which should return
 `{"status":"ok"}`.
 
+Then do the schema and the corpus again, against the eval database. Skipping
+this is the most common way a first run fails:
+
+```bash
+EVAL_DB="postgresql+asyncpg://invoice_agent:invoice_agent@localhost:5432/invoice_agent_eval"
+
+DATABASE_URL="$EVAL_DB" alembic upgrade head
+DATABASE_URL="$EVAL_DB" python -m fixtures.load_policy
+```
+
+`initdb/` creates that database and its two extensions, but no tables, and
+nothing creates them at test time -- so without the first command the test suite
+fails on a schema that does not exist. Without the second, `documents` stays
+empty and every policy-dependent eval case fails in a way that reads exactly
+like retrieval having regressed. Both are explained in
+[`backend/README-eval-db.md`](backend/README-eval-db.md).
+
 ### 4. Frontend
 
 ```bash
@@ -325,7 +342,7 @@ npm run dev                     # serves on :5173
 
 ## Running things
 
-**Tests.** 130 tests, no API calls. Integration tests hit paid APIs and are
+**Tests.** 135 tests, no API calls. Integration tests hit paid APIs and are
 deselected by default.
 
 ```bash

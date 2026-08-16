@@ -48,7 +48,7 @@ The extensions are not optional and are not installed by any migration.
 `alembic revision --autogenerate` only diffs tables and columns, so
 `CREATE EXTENSION` has never been part of the migration chain — the
 application database has them because someone ran them by hand. A database
-with all seven migrations applied and neither extension installed still cannot
+with all eight migrations applied and neither extension installed still cannot
 run `lookup_vendor`'s `similarity()` or store a pgvector column.
 
 ## Schema and corpus
