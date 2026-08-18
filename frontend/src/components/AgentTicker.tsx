@@ -11,9 +11,13 @@ const LABELS: Record<string, (input: any) => string> = {
   submit_recommendation: () => "Reaching a decision…",
 };
 
-function describeStep(tool: string, input: Record<string, unknown>): string {
+// `tool` and `input` are nullable: the activity endpoint reads them off the
+// latest transcript entry with .get(), so a malformed entry yields null rather
+// than failing the poll.
+function describeStep(tool: string | null, input: Record<string, unknown> | null): string {
+  if (!tool) return "Working…";
   const label = LABELS[tool];
-  return label ? label(input) : `Running ${tool}…`;
+  return label ? label(input ?? {}) : `Running ${tool}…`;
 }
 
 interface AgentTickerProps {

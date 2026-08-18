@@ -13,6 +13,16 @@ from app.agent.runner import run_agent
 from app.db import SessionLocal, get_session
 from app.extraction.pipeline import extract_invoice
 from app.models import AgentRun, AuditLog, Invoice, LineItem, Vendor
+from app.schemas import (
+    Activity,
+    AuditEntry,
+    Health,
+    InvoiceAccepted,
+    InvoiceDetail,
+    InvoiceSummary,
+    PendingVendor,
+    VendorApproved,
+)
 
 app = FastAPI(title="Invoice Agent")
 
@@ -27,7 +37,7 @@ app.add_middleware(
 UPLOAD_DIR = Path("fixtures/uploads")
 
 
-@app.get("/health")
+@app.get("/health", response_model=Health)
 async def health():
     return {"status": "ok"}
 
@@ -97,7 +107,7 @@ async def process_invoice(invoice_id: uuid.UUID) -> None:
         await run_agent(session, invoice)
 
 
-@app.post("/invoices", status_code=202)
+@app.post("/invoices", status_code=202, response_model=InvoiceAccepted)
 async def create_invoice(
     background: BackgroundTasks,
     file: UploadFile = File(...),
@@ -164,9 +174,9 @@ def payee_name(invoice: Invoice, vendor: Vendor | None, run: AgentRun | None) ->
     return None
 
 
-def summarize(invoice: Invoice, vendor: Vendor | None, run: AgentRun | None) -> dict:
+def summarize(invoice: Invoice, vendor: Vendor | None, run: AgentRun | None) -> InvoiceSummary:
     """One queue row: what the invoice is, and where its review got to."""
-    return {
+    return InvoiceSummary(**{
         "id": str(invoice.id),
         "invoice_number": invoice.invoice_number,
         "vendor_name": payee_name(invoice, vendor, run),
@@ -178,7 +188,7 @@ def summarize(invoice: Invoice, vendor: Vendor | None, run: AgentRun | None) -> 
         "decision": run.decision if run else None,
         "confidence": run.confidence if run else None,
         "reasoning": run.transcript.get("reasoning") if run else None,
-    }
+    })
 
 
 def policy_clauses(tool_calls: list[dict]) -> list[dict]:
@@ -204,7 +214,7 @@ def policy_clauses(tool_calls: list[dict]) -> list[dict]:
     return clauses
 
 
-@app.get("/invoices")
+@app.get("/invoices", response_model=list[InvoiceSummary])
 async def list_invoices(session: AsyncSession = Depends(get_session)):
     """The queue: every invoice, newest first, with how its review turned out."""
     invoices = (
@@ -231,7 +241,7 @@ async def list_invoices(session: AsyncSession = Depends(get_session)):
     ]
 
 
-@app.get("/invoices/{invoice_id}")
+@app.get("/invoices/{invoice_id}", response_model=InvoiceDetail)
 async def get_invoice(invoice_id: uuid.UUID, session: AsyncSession = Depends(get_session)):
     """One invoice, with the whole transcript of how it was decided.
 
@@ -246,13 +256,13 @@ async def get_invoice(invoice_id: uuid.UUID, session: AsyncSession = Depends(get
     vendor = await session.get(Vendor, invoice.vendor_id) if invoice.vendor_id else None
     tool_calls = run.transcript.get("tool_calls", []) if run else []
 
-    return {
-        **summarize(invoice, vendor, run),
-        "due_date": invoice.due_date.isoformat() if invoice.due_date else None,
-        "po_number": invoice.po_number,
-        "tool_calls": tool_calls,
-        "policy_clauses": policy_clauses(tool_calls),
-    }
+    return InvoiceDetail(
+        **summarize(invoice, vendor, run).model_dump(),
+        due_date=invoice.due_date.isoformat() if invoice.due_date else None,
+        po_number=invoice.po_number,
+        tool_calls=tool_calls,
+        policy_clauses=policy_clauses(tool_calls),
+    )
 
 
 @app.get("/invoices/{invoice_id}/file")
@@ -273,7 +283,7 @@ async def get_invoice_file(invoice_id: uuid.UUID, session: AsyncSession = Depend
     return FileResponse(path, media_type="application/pdf")
 
 
-@app.get("/invoices/{invoice_id}/activity")
+@app.get("/invoices/{invoice_id}/activity", response_model=Activity)
 async def get_activity(invoice_id: uuid.UUID, session: AsyncSession = Depends(get_session)):
     """What the agent is doing right now.
 
@@ -322,7 +332,7 @@ class DecisionNote(BaseModel):
 
 async def record_human_decision(
     session: AsyncSession, invoice_id: uuid.UUID, status: str, action: str, note: str | None
-) -> dict:
+) -> InvoiceSummary:
     """Settle an invoice on a person's authority, and record that they did.
 
     The status change and the audit row are written in one commit: an approved
@@ -354,7 +364,7 @@ async def record_human_decision(
     return summarize(invoice, vendor, run)
 
 
-@app.post("/invoices/{invoice_id}/approve")
+@app.post("/invoices/{invoice_id}/approve", response_model=InvoiceSummary)
 async def approve_invoice(
     invoice_id: uuid.UUID,
     payload: DecisionNote | None = None,
@@ -366,7 +376,7 @@ async def approve_invoice(
     return await record_human_decision(session, invoice_id, "approved", "approve", note)
 
 
-@app.post("/invoices/{invoice_id}/reject")
+@app.post("/invoices/{invoice_id}/reject", response_model=InvoiceSummary)
 async def reject_invoice(
     invoice_id: uuid.UUID,
     payload: DecisionNote | None = None,
@@ -377,7 +387,7 @@ async def reject_invoice(
     return await record_human_decision(session, invoice_id, "rejected", "reject", note)
 
 
-@app.get("/audit-log")
+@app.get("/audit-log", response_model=list[AuditEntry])
 async def list_audit_log(session: AsyncSession = Depends(get_session)):
     """Every human decision, newest first.
 
@@ -428,7 +438,7 @@ async def list_audit_log(session: AsyncSession = Depends(get_session)):
     return result
 
 
-@app.get("/vendors/pending")
+@app.get("/vendors/pending", response_model=list[PendingVendor])
 async def list_pending_vendors(session: AsyncSession = Depends(get_session)):
     """Drafted payees waiting on a person to check them out of band."""
     vendors = (
@@ -445,7 +455,7 @@ async def list_pending_vendors(session: AsyncSession = Depends(get_session)):
     ]
 
 
-@app.post("/vendors/{vendor_id}/approve")
+@app.post("/vendors/{vendor_id}/approve", response_model=VendorApproved)
 async def approve_vendor(vendor_id: uuid.UUID, session: AsyncSession = Depends(get_session)):
     """Make a drafted payee payable, once a human has approved them.
 

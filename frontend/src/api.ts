@@ -1,61 +1,20 @@
+import type { components } from "./api-types";
+
 const API_BASE = "http://localhost:8000";
 
-export interface ToolCall {
-  tool: string;
-  input: Record<string, unknown>;
-  output: Record<string, unknown>;
-}
+// Generated from the backend's OpenAPI schema -- run `npm run gen:types` after
+// changing a response model. Do not hand-edit api-types.ts.
+type Schemas = components["schemas"];
 
-export interface PolicyClause {
-  section: string;
-  text: string;
-}
-
-export interface InvoiceSummary {
-  id: string;
-  invoice_number: string | null;
-  vendor_name: string | null;
-  amount: number | null;
-  currency: string | null;
-  status: string;
-  created_at: string | null;
-  run_status: string | null;
-  decision: string | null;
-  confidence: number | null;
-  reasoning: string | null;
-}
-
-export interface InvoiceDetail extends InvoiceSummary {
-  due_date: string | null;
-  po_number: string | null;
-  tool_calls: ToolCall[];
-  policy_clauses: PolicyClause[];
-}
-
-export interface Activity {
-  status: string | null;
-  latest: { tool: string; input: Record<string, unknown> } | null;
-  call_count: number;
-  decision: string | null;
-}
-
-export interface PendingVendor {
-  id: string;
-  name: string;
-  bank_details: string | null;
-}
-
-export interface AuditEntry {
-  id: string;
-  invoice_id: string;
-  vendor_name: string | null;
-  amount: number | null;
-  currency: string | null;
-  action: string;
-  note: string | null;
-  agent_decision: string | null;
-  decided_at: string | null;
-}
+export type ToolCall = Schemas["ToolCall"];
+export type PolicyClause = Schemas["PolicyClause"];
+export type InvoiceSummary = Schemas["InvoiceSummary"];
+export type InvoiceDetail = Schemas["InvoiceDetail"];
+export type Activity = Schemas["Activity"];
+export type PendingVendor = Schemas["PendingVendor"];
+export type AuditEntry = Schemas["AuditEntry"];
+export type VendorApproved = Schemas["VendorApproved"];
+export type InvoiceAccepted = Schemas["InvoiceAccepted"];
 
 async function handleResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
@@ -64,7 +23,7 @@ async function handleResponse<T>(response: Response): Promise<T> {
   return response.json();
 }
 
-export async function uploadInvoice(file: File): Promise<{ id: string; status: string }> {
+export async function uploadInvoice(file: File): Promise<InvoiceAccepted> {
   const formData = new FormData();
   formData.append("file", file);
 
@@ -128,9 +87,7 @@ export function invoiceFileUrl(id: string): string {
   return `${API_BASE}/invoices/${id}/file`;
 }
 
-export async function approveVendor(
-  id: string
-): Promise<{ id: string; name: string; approval_status: string }> {
+export async function approveVendor(id: string): Promise<VendorApproved> {
   const response = await fetch(`${API_BASE}/vendors/${id}/approve`, { method: "POST" });
   return handleResponse(response);
 }
