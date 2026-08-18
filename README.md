@@ -66,10 +66,14 @@ backend/fixtures/
   load_policy.py  Chunks and embeds the policy corpus
   seed_demo.py    Resets the database to a demo-ready state
 
+backend/eval_results/  Raw eval output, one JSON per labelled run
 backend/tests/    135 tests
 frontend/src/     React dashboard: views/, components/, api.ts
 
-docs/plans/       How this was built: design and implementation docs
+docs/
+  design.md       The design document written before the build
+  plans/          The implementation plans the build followed
+  evals/          Before-and-after eval write-ups
 ```
 
 ### API endpoints
@@ -251,8 +255,8 @@ unperformable check as a passed one.
 In this case, the result makes sense as the vendor drift test passed, but an invoice should be flagged if it is a high value without a purchase order. Having that agent explain that this is the only reason the invoice was flagged makes it easier for the human to verify the output. 
 
 Full analysis of the original comparison is in
-[`finalResults.md`](finalResults.md). Raw data lives in
-`backend/eval_results_{baseline,with_rag,with_rag_v2}.json`.
+[`docs/evals/with-retrieval.md`](docs/evals/with-retrieval.md). Raw data lives in
+`backend/eval_results/{baseline,with_rag,with_rag_v2}.json`.
 
 ### Why Opus, measured
 
@@ -291,7 +295,7 @@ match the case, so the pair measures not capability but which way a model errs
 when the governing rule cannot be read. Opus errs toward escalation, Sonnet
 toward approval. Given that a wrongful approval is the error nothing downstream
 catches, the caution is the thing worth paying for. Raw data in
-`backend/eval_results_sonnet5.json`.
+`backend/eval_results/sonnet5.json`.
 
 ---
 
@@ -389,7 +393,7 @@ cd backend && python -m pytest -q -m "not integration"
 ```
 
 **The eval suite.** Twelve cases, three trials each. Roughly 20 minutes and
-real money. Writes `eval_results_<label>.json`, which the next run can be
+real money. Writes `eval_results/<label>.json`, which the next run can be
 diffed against.
 
 ```bash
@@ -410,8 +414,9 @@ cd backend && python -m fixtures.seed_demo
 The file layout is at the top of this README, under
 [Where everything lives](#where-everything-lives).
 
-- [`Project.MD`](Project.MD): the design document written before the build
+- [`docs/design.md`](docs/design.md): the design document written before the build
 - [`docs/plans/`](docs/plans): the implementation plans the build followed
-- [`finalResults.md`](finalResults.md): the before-and-after retrieval measurement
+- [`docs/evals/with-retrieval.md`](docs/evals/with-retrieval.md): the before-and-after retrieval measurement
+- [`docs/evals/baseline.md`](docs/evals/baseline.md): the pre-retrieval baseline it is measured against
 - [`backend/README-eval-db.md`](backend/README-eval-db.md): why the tests and evals use a separate database
-- [`AI-Agent-Evals.md`](AI-Agent-Evals.md): notes on Anthropic's eval-harness design, which framed how the suite here was built
+- [`docs/eval-design-notes.md`](docs/eval-design-notes.md): notes on Anthropic's eval-harness design, which framed how the suite here was built

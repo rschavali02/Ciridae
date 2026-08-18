@@ -9,6 +9,7 @@ import asyncio
 import json
 import sys
 from collections import Counter
+from pathlib import Path
 
 from app.eval.graders import (
     grade_committed,
@@ -86,11 +87,15 @@ async def run_all(label: str) -> dict:
     return results
 
 
+RESULTS_DIR = Path(__file__).resolve().parents[2] / "eval_results"
+
+
 def _write(label: str, results: dict) -> str:
-    path = f"eval_results_{label}.json"
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    path = RESULTS_DIR / f"{label}.json"
     with open(path, "w") as f:
         json.dump(results, f, indent=2)
-    return path
+    return str(path)
 
 
 def _summarize(label: str, results: dict) -> None:

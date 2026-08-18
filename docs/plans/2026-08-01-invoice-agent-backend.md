@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, `pdfplumber`, `anthropic` SDK, `voyageai` SDK, Postgres 16 + pgvector (Docker Compose), SQLAlchemy 2.0 (async, `asyncpg` driver), Alembic, FastAPI, pytest, pytest-asyncio.
 
-**Frontend is out of scope for this plan** — it gets its own plan once this backend runs end-to-end (per the design in `Project.MD`).
+**Frontend is out of scope for this plan** — it gets its own plan once this backend runs end-to-end (per the design in `../design.md`).
 
 ---
 
@@ -33,7 +33,7 @@ Phase 3 builds the agent with only the five structured tools — `lookup_vendor`
 
 Phase 5 then adds policy retrieval as a single additive change (one more decorated tool in `build_tools`, one sentence appended to the system prompt, the eval cases don't change at all) and re-runs the identical suite.
 
-The point is to make "does RAG actually earn its place here?" a number you measured rather than an assertion you accepted. It also mirrors the capability-eval loop from `AI-Agent-Evals.md`: measure what the agent can do, find where it breaks, make one change, re-measure. If the jump is small, that is a real and useful finding — not a failure.
+The point is to make "does RAG actually earn its place here?" a number you measured rather than an assertion you accepted. It also mirrors the capability-eval loop from `../eval-design-notes.md`: measure what the agent can do, find where it breaks, make one change, re-measure. If the jump is small, that is a real and useful finding — not a failure.
 
 **Note on already-completed work:** Tasks 7 and 8 (Postgres + the `documents` table) were built before this resequencing, so the `documents` table exists and sits empty until Phase 5. Harmless — no rework needed, just don't expect anything in it before then.
 
@@ -712,7 +712,7 @@ class Document(Base):
     embedding: Mapped[list[float]] = mapped_column(Vector(1024), nullable=False)
 ```
 
-> **Revised after the RAG-scope decision.** This model originally had `invoice_id` and `doc_type` columns, because the plan was to embed invoice text alongside the policy. That was dropped — see "RAG is policy-only" in `Project.MD`. The corpus is now only the policy, so `doc_type` would be a constant and `invoice_id` would always be null. They're replaced by `section`, which carries the policy heading a chunk came from so retrieved clauses are citable.
+> **Revised after the RAG-scope decision.** This model originally had `invoice_id` and `doc_type` columns, because the plan was to embed invoice text alongside the policy. That was dropped — see "RAG is policy-only" in `../design.md`. The corpus is now only the policy, so `doc_type` would be a constant and `invoice_id` would always be null. They're replaced by `section`, which carries the policy heading a chunk came from so retrieved clauses are citable.
 >
 > If you already ran the original migration, the table needs altering rather than creating — see Task 8b.
 
@@ -2608,7 +2608,7 @@ git commit -m "feat: add LLM-rubric groundedness grader for agent reasoning"
 
 Each case seeds exactly what it needs to test one thing. Two rules govern this suite:
 
-**Every case must test a rule the policy actually states.** The governing clause for most is §II: *"discrepancies between the vendor invoice and the purchase order greater than 10 percent or $1,000 USD or equivalent in local currency (the lesser of the two) must be resolved before the payment can be processed."* A case asserting a rule the corpus doesn't contain is a broken task, not an agent failure — that distinction is Step 7 of `AI-Agent-Evals.md` and it's the most common way eval suites go wrong.
+**Every case must test a rule the policy actually states.** The governing clause for most is §II: *"discrepancies between the vendor invoice and the purchase order greater than 10 percent or $1,000 USD or equivalent in local currency (the lesser of the two) must be resolved before the payment can be processed."* A case asserting a rule the corpus doesn't contain is a broken task, not an agent failure — that distinction is Step 7 of `../eval-design-notes.md` and it's the most common way eval suites go wrong.
 
 **Every anomaly case is paired with a near-identical case that should pass.** Cases 6/7/8 vary only in how far the invoice diverges from its PO; 2 and 3 differ only in whether the invoice number matches exactly. Without the pairs, an agent that escalates everything scores well — the one-sided-optimization trap from Step 3 of the evals doc.
 
@@ -2789,7 +2789,7 @@ cd backend && python -m app.eval.report baseline
 
 This is the Phase 4 baseline. Two things to do with it:
 
-1. **Read the transcripts, don't just read the score.** Per Step 6 of `AI-Agent-Evals.md`, a failure should look *fair* — it should be obvious what the agent got wrong and why. If a case fails because the seed data doesn't contain what the grader checks for, that's a broken task, not an incapable agent (Step 7). Fix those before treating the number as meaningful.
+1. **Read the transcripts, don't just read the score.** Per Step 6 of `../eval-design-notes.md`, a failure should look *fair* — it should be obvious what the agent got wrong and why. If a case fails because the seed data doesn't contain what the grader checks for, that's a broken task, not an incapable agent (Step 7). Fix those before treating the number as meaningful.
 2. **Expect cases 6-9 and 11 to fail**, and confirm they fail *for the predicted reason* — the agent guessing at a tolerance or threshold it has no way to look up. If one of them passes, read why: the agent may have guessed a plausible number and gotten lucky, which is worth knowing, or the case may not actually require the policy.
 
 Commit the baseline JSON — it's the thing Phase 5 is measured against.
@@ -3001,7 +3001,7 @@ git commit -m "feat: wire search_policy into the agent loop; record post-RAG eva
 
 ## What's next
 
-This plan stops at a working backend: extraction, a tool-using agent, an eval harness you can hit via `POST /eval/run`, and a measured before/after on what policy retrieval actually buys. The remaining pieces from `Project.MD` — `POST /invoices`, `GET /invoices`, approve/reject endpoints, and the React dashboard — get their own plan.
+This plan stops at a working backend: extraction, a tool-using agent, an eval harness you can hit via `POST /eval/run`, and a measured before/after on what policy retrieval actually buys. The remaining pieces from `../design.md` — `POST /invoices`, `GET /invoices`, approve/reject endpoints, and the React dashboard — get their own plan.
 
 ### Outstanding backlog
 
@@ -3050,6 +3050,6 @@ Before reaching Phase 2, a `POST /extract` endpoint and a minimal Vite/React/Typ
 
 This means `backend/app/main.py` already exists by the time Task 28 comes around — Task 28 should **extend** it (add `/eval/run` alongside the existing `/health` and `/extract`), not create it from scratch. `requirements.txt` will already have `fastapi`, `uvicorn[standard]`, `python-multipart`, and `httpx` from this addition too — skip re-adding them in Task 28.
 
-**When Phase 3 lands** (Task 13 onward adds the `Invoice`/`Vendor` tables), `POST /extract` is the natural thing to evolve into the real `POST /invoices` upload endpoint from `Project.MD` — same extraction call, but now it persists an `Invoice` row and kicks off the agent, instead of just returning JSON. Don't build a second, separate upload endpoint — extend this one.
+**When Phase 3 lands** (Task 13 onward adds the `Invoice`/`Vendor` tables), `POST /extract` is the natural thing to evolve into the real `POST /invoices` upload endpoint from `../design.md` — same extraction call, but now it persists an `Invoice` row and kicks off the agent, instead of just returning JSON. Don't build a second, separate upload endpoint — extend this one.
 
 The frontend (`frontend/`) at this point is just the upload-and-view-results page. It becomes the approval dashboard once Phase 3's agent and `POST /invoices`/approve/reject endpoints exist — same app, more views, not a rewrite.

@@ -8,7 +8,7 @@ Phase 5 adds `search_policy` as a single additive change and re-runs this identi
 The point of recording this file is to make "did retrieval earn its place?" a number that was
 measured rather than a claim that was asserted.
 
-Raw data: `backend/eval_results_baseline.json`.
+Raw data: `backend/eval_results/baseline.json`.
 
 ## Headline
 
@@ -124,7 +124,7 @@ nothing persists after the run — which is also why re-grading needs the saved 
 **The groundedness judge was fixed mid-Phase-4.** The first run graded reasoning against tool
 results alone, while the agent is also handed the invoice in its opening prompt — so quoting the
 invoice read as an unsupported claim, producing 14 false "ungrounded" flags. The judge now sees
-both sources. That first run is kept as `backend/eval_results_baseline_v1_broken_judge.json`;
+both sources. That first run is kept as `backend/eval_results/baseline_v1_broken_judge.json`;
 its deterministic graders agreed with this run at 9/12 and 7/7 structured, which is a free read
 on run-to-run stability.
 

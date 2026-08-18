@@ -1048,7 +1048,7 @@ cd backend && PYTHONPATH=. python scripts/probe_case.py 11 3
 cd backend && PYTHONPATH=. python scripts/probe_case.py 05 3
 ```
 
-- **Case 11** should now be solvable: the invoice and PO both carry a currency, so the agent can see they match rather than refusing to compare bare numerals. If it passes, update `finalResults.md` — it moves from "broken task" to "fixed by a schema change the eval suite identified".
+- **Case 11** should now be solvable: the invoice and PO both carry a currency, so the agent can see they match rather than refusing to compare bare numerals. If it passes, update `../evals/with-retrieval.md` — it moves from "broken task" to "fixed by a schema change the eval suite identified".
 - **Case 05** must still escalate. It is the assertion protecting the vendor control, and `draft_vendor` gives the agent a new action on exactly that case. If it now approves, the control has been undermined and Task 5 or 6 is wrong.
 
 Do not tune anything to make case 11 pass. If it still fails, read the transcript and record why.

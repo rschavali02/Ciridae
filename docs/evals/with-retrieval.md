@@ -1,10 +1,10 @@
 # Did retrieval earn its place? — measured
 
-Companion to `initialResults.md`, which recorded the baseline before the agent could
+Companion to `baseline.md`, which recorded the baseline before the agent could
 read the AP policy. Phase 5 added `search_policy` as a single additive change — one
 tool, two prompt lines — and re-ran the identical twelve cases.
 
-Raw data: `backend/eval_results_baseline.json` and `backend/eval_results_with_rag.json`.
+Raw data: `backend/eval_results/baseline.json` and `backend/eval_results/with_rag.json`.
 
 ## Headline
 
@@ -105,7 +105,7 @@ invoice against a currency-less PO genuinely is a false match, and §IV.F's rule
 paying in the business unit's local currency cannot be evaluated when nothing records
 which currency anything is in.
 
-Per Step 7 of `AI-Agent-Evals.md`, a task the agent cannot solve through no fault of
+Per Step 7 of `../eval-design-notes.md`, a task the agent cannot solve through no fault of
 its own is a broken task. The fix is a schema change — a currency column on invoices
 and purchase orders — not prompt tuning. Until then, case 11 asserts an outcome the
 data model cannot support.
@@ -155,10 +155,10 @@ Not done, and not required for the result above to stand:
 
 The comparison above was measured on the day the currency columns landed, and
 the recorded run predates them — the `get_purchase_order` output saved in
-`eval_results_with_rag.json` for case 11 carries no `po_currency`,
+`eval_results/with_rag.json` for case 11 carries no `po_currency`,
 `invoice_currency` or `currency_match` field at all. The suite was re-run
 against the current code, unchanged in every other respect, as
-`backend/eval_results_with_rag_v2.json`.
+`backend/eval_results/with_rag_v2.json`.
 
 | Metric | Baseline | With retrieval | Current |
 |---|---|---|---|
