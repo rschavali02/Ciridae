@@ -1,20 +1,9 @@
 """Runs eval cases against the agent under per-trial isolation.
 
-Isolation is the whole design constraint here. Two of the agent's tools --
-get_invoice_history and check_duplicate_invoice -- answer questions *about
-accumulated state*, so a trial that leaves rows behind does not merely pollute
-the next one, it changes what the next one is testing. Seed the same vendor
-twice and lookup_vendor starts reporting an ambiguous match; leave three past
-invoices behind and an outlier stops looking like an outlier.
-
-That makes "roll back after each trial" insufficient on its own: run_agent
-commits when it saves the transcript, and there is nothing left to roll back
-afterwards. Each trial instead runs inside an outer transaction with the
-session in savepoint mode, so the trial's own commits are undone with it.
-
-Nothing is persisted, deliberately. An endpoint that wiped or mutated the
-invoices table would be a hazard aimed at production data; transcripts are
-returned in memory and written to JSON by the caller instead.
+Two of the agent's tools answer questions about accumulated state, so a trial
+that leaves rows behind changes what the next one is testing. Each trial runs inside 
+an outer transaction with the session in savepoint mode,which undoes the trial's own 
+commits with it.
 """
 
 from contextlib import asynccontextmanager
@@ -28,22 +17,7 @@ from app.config import require_eval_database_url
 from app.eval.cases import CaseResult, EvalCase, TrialResult
 from app.models import Invoice, PurchaseOrder, Vendor
 
-# The harness gets its own unpooled engine rather than borrowing the app's.
-#
-# A pooled asyncpg connection is bound to the event loop that opened it, and the
-# harness is driven from several -- a pytest test, a CLI script, a request
-# handler. Reusing the app engine across them surfaces as "another operation is
-# in progress", which reads like a transaction bug and is really a loop-lifetime
-# one. NullPool opens and closes per checkout, so nothing outlives its loop.
-#
-# The cost is one connection per trial, against a run that makes on the order of
-# a hundred model calls. It does not register.
-#
-# It also points at a *different database* from the application's. The rollback
-# below is what actually protects the rows, but it is the only thing protecting
-# them, and `DELETE FROM` every table is already written and runs 36 times a
-# run. A separate database means a refactor that breaks the transaction wrapper
-# empties a scratch database instead of the one holding the demo.
+
 eval_engine = create_async_engine(require_eval_database_url(), poolclass=NullPool)
 
 # Child tables first -- foreign keys point upward.
@@ -68,9 +42,6 @@ async def isolated_session():
         expire_on_commit=False,
     )
     try:
-        # Start from nothing. Ambient rows are not neutral: a stray vendor with
-        # a similar name turns a clean resolution into an ambiguous one, and the
-        # case then fails for a reason that has nothing to do with the agent.
         for table in _TABLES:
             await session.execute(text(f"DELETE FROM {table}"))
         await session.commit()

@@ -1,13 +1,8 @@
-"""Runs the suite and writes a result file the next run can be compared against.
+"""Runs the suite and writes a result file the next run can be diffed against.
 
-Results go to JSON as well as the terminal, because the Phase 4 baseline only
-means something if Phase 5 can be diffed against it rather than remembered.
-
-Three graders run per trial, and all three are reported. Outcome alone is not
-enough: seven of the twelve cases expect `escalate`, and `run_agent` forces
-exactly that when the agent runs out of iterations without deciding. A run that
-looked like 7/12 could be an agent that never committed to anything, so
-`committed` is reported beside the score rather than folded into it.
+Every grader is reported separately rather than folded into one score: outcome
+alone cannot tell a correct escalation from an agent that never committed to
+anything.
 """
 
 import asyncio
@@ -38,8 +33,7 @@ async def run_all(label: str) -> dict:
         committed = [grade_committed(case, t) for t in result.trials]
         grounded = [await grade_groundedness(case, t) for t in result.trials]
 
-        # pass@1 is the per-trial success rate, not trial zero. Both estimate
-        # the same quantity; one of them throws away two thirds of the run.
+        # pass@1 is the per-trial success rate
         passes = [g.passed for g in outcomes]
         results[case.name] = {
             "needs_policy": case.needs_policy,
@@ -49,25 +43,15 @@ async def run_all(label: str) -> dict:
             "tool_calls_ok": all(g.passed for g in tools),
             "committed": all(g.passed for g in committed),
             "grounded": all(g.passed for g in grounded),
-            # A trial that reached the right decision on reasoning the judge
-            # could not trace back to a tool result. Not a pass and not a
-            # failure -- a warning that the score is flattering the agent.
             "lucky_guesses": sum(
                 1 for o, gr in zip(outcomes, grounded) if o.passed and not gr.passed
             ),
-            # Only failures carry a severity, so this is the harm profile of
-            # what went wrong -- `unsafe` is the one that matters.
             "severities": [g.severity for g in outcomes if g.severity],
             "trials": [
                 {
                     "decision": t.decision,
                     "confidence": t.confidence,
                     "tools_called": t.tools_called,
-                    # The full calls, not just their names. Without inputs and
-                    # outputs the groundedness judge cannot be re-run against a
-                    # saved result, and the harness rolls its transcripts back,
-                    # so a run that omits these can only be re-graded by paying
-                    # for the whole thing again.
                     "tool_calls": t.tool_calls,
                     "reasoning": t.reasoning,
                     "outcome": o.detail,
@@ -94,9 +78,6 @@ async def run_all(label: str) -> dict:
                 f"| tools={trial.tools_called}"
             )
 
-        # Flushed per case rather than once at the end. A full run is ~20 minutes
-        # of paid model calls, and losing all of it to a crash in the twelfth
-        # case would mean paying for the first eleven twice.
         _write(label, results)
 
     _summarize(label, results)
@@ -113,13 +94,10 @@ def _write(label: str, results: dict) -> str:
 
 
 def _summarize(label: str, results: dict) -> None:
-    """Print the split that Phase 5 is measured on.
+    """Print the overall score split by whether a case needs the policy.
 
-    The headline number is close to meaningless on its own here: five cases
-    turn on rules the agent cannot read at the baseline, so a low score is the
-    expected result rather than a finding. Splitting on `needs_policy` is what
-    makes the rerun legible -- structured-only cases should hold steady while
-    the policy-dependent ones move.
+    The headline number alone is not legible: structured-only cases should hold
+    steady across runs while the policy-dependent ones move.
     """
     structured = [r for r in results.values() if not r["needs_policy"]]
     policy = [r for r in results.values() if r["needs_policy"]]
@@ -143,10 +121,6 @@ def _summarize(label: str, results: dict) -> None:
     if unsafe:
         print(f"  !! {unsafe} wrongful approval(s) -- no human ever sees these")
 
-    # The number that decides whether a passing policy-dependent case means
-    # anything. An agent with no way to read the policy can still land on the
-    # right answer by recalling a plausible threshold; counted as a pass, that
-    # makes retrieval look unnecessary when it is exactly what was missing.
     lucky = sum(r["lucky_guesses"] for r in results.values())
     if lucky:
         by_case = [n for n, r in results.items() if r["lucky_guesses"]]

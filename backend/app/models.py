@@ -26,41 +26,26 @@ def uuid_pk() -> Mapped[uuid.UUID]:
 
 
 class Document(Base):
-    """A chunk of the AP policy corpus.
-
-    Policy only -- invoice text is deliberately not embedded, since the agent
-    already receives it in its opening prompt. See "RAG is policy-only" in
-    Project.MD.
-    """
+    """A chunk of the AP policy corpus. Policy only -- invoice text is never embedded."""
 
     __tablename__ = "documents"
     id: Mapped[uuid.UUID] = uuid_pk()
     section: Mapped[str] = mapped_column(Text, nullable=False)  # e.g. "II. Policy"
     chunk_text: Mapped[str] = mapped_column(Text, nullable=False)
+    # Width must match rag.embeddings.EMBED_DIM.
     embedding: Mapped[list[float]] = mapped_column(Vector(1024), nullable=False)
 
 
 class PurchaseOrder(Base):
-    """Stands in for the ERP's purchase order records.
-
-    Deliberately minimal -- the agent only ever needs to answer "does this PO
-    exist, and for how much".
-    """
+    """Stands in for the ERP's purchase order records."""
 
     __tablename__ = "purchase_orders"
     id: Mapped[uuid.UUID] = uuid_pk()
     po_number: Mapped[str] = mapped_column(String, nullable=False, unique=True)
     amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
-    # ISO 4217. Bare amounts cannot be compared across currencies -- a EUR
-    # invoice against a currency-less PO reports a meaningless 0.0% variance.
-    # This is why case 11 (11_non_usd_currency_approve) cannot be scored today:
-    # §IV.F's local-currency rule cannot be evaluated when nothing records
-    # which currency anything is in.
+    # ISO 4217. Constrained uppercase so 'eur' and 'EUR' cannot compare as a mismatch.
     currency: Mapped[str] = mapped_column(String(3), nullable=True)
 
-    # `fields.py` is LLM-populated, so 'eur' and 'EUR' will both arrive. Two
-    # spellings of one currency compare as a mismatch -- a false alarm in the
-    # exact invoice-to-PO comparison this column exists to enable.
     __table_args__ = (
         CheckConstraint(
             "currency IS NULL OR currency = upper(currency)",
@@ -75,51 +60,25 @@ class Vendor(Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
     normalized_name: Mapped[str] = mapped_column(String, nullable=False)
     bank_details: Mapped[str] = mapped_column(String, nullable=True)
-    # 'pending_approval' | 'active'. A drafted vendor must never resolve in
-    # lookup_vendor, or the next invoice from that payee matches cleanly and the
-    # control disappears rather than holding.
-    #
-    # Named `approval_status` rather than `status` because `Invoice.status`
-    # already exists with a different value set that also contains a
-    # pending-flavoured member; a response model joining the two would otherwise
-    # carry two unrelated `status` fields.
-    #
-    # Defaulted the fail-safe way round: an insert that forgets this column
-    # produces a non-payable vendor, not an immediately-payable one. The
-    # migration's `server_default='active'` exists only to backfill rows written
-    # before this column, and is dropped there straight after.
+    # 'pending_approval' | 'active'. Only active vendors resolve in lookup_vendor.
+    # Defaults to pending so a vendor never becomes payable by omission.
     approval_status: Mapped[str] = mapped_column(
         String, nullable=False, default="pending_approval"
     )
-    # 'agent' | 'human'. Duplicates the value set of `AuditLog.actor` but cannot
-    # live there: `audit_log.invoice_id` is NOT NULL, so that table structurally
-    # cannot record the creation of a vendor.
-    created_by: Mapped[str] = mapped_column(String, nullable=False, server_default="human")
+    created_by: Mapped[str] = mapped_column(String, nullable=False, server_default="human")  # 'agent' | 'human'
 
 
 class Invoice(Base):
     __tablename__ = "invoices"
     id: Mapped[uuid.UUID] = uuid_pk()
     vendor_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("vendors.id"), nullable=True)
-    # The payee exactly as the document printed it, written at extraction time.
-    #
-    # `vendor_id` is only set once a name resolves to an *active* row in the
-    # vendor master, so an invoice from an unknown payee carries none. Without
-    # this column that invoice records nowhere who it claims to be from: the
-    # name survives only inside `raw_text` and the agent's transcript, so the
-    # row is orphaned from its vendor for good, invisible to every history and
-    # duplicate check, and it never joins that vendor's history even after a
-    # human approves them.
-    #
-    # Unverified by construction. It is what the document said, not who the
-    # payment is going to, and nothing may treat it as an identity -- that is
-    # what `vendor_id` is for.
+    # The payee as printed, written at extraction time. Unverified by construction:
+    # vendor_id is the resolved identity, this is only what the document claimed.
+    # Without it an unresolved payee records nowhere who it claims to be from.
     extracted_vendor_name: Mapped[str] = mapped_column(String, nullable=True)
     invoice_number: Mapped[str] = mapped_column(String, nullable=True)
     amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=True)
-    # ISO 4217, uppercase-constrained, for the reasons set out on
-    # `PurchaseOrder.currency` -- the other half of the comparison.
-    currency: Mapped[str] = mapped_column(String(3), nullable=True)
+    currency: Mapped[str] = mapped_column(String(3), nullable=True)  # ISO 4217
     due_date: Mapped[date] = mapped_column(Date, nullable=True)
     po_number: Mapped[str] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
@@ -155,20 +114,8 @@ class AgentRun(Base):
     id: Mapped[uuid.UUID] = uuid_pk()
     invoice_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("invoices.id"), nullable=False)
     source: Mapped[str] = mapped_column(String, nullable=False, default="live")  # "live" | "eval"
-    # 'running' | 'complete'. The row is now written when the run starts and
-    # updated per tool call, so a reader can watch a review in progress -- which
-    # means there is a state where the transcript is real but incomplete, and
-    # `decision IS NULL` alone cannot distinguish it from a finished run that
-    # failed to decide.
-    #
-    # No default, matching the precedent set for `Vendor.approval_status`: both
-    # of today's writers (`RunTranscript.begin`, `RunTranscript.save`) already
-    # set this explicitly, so a default is never exercised in practice. But
-    # `'complete'` is the wrong direction to fail open in -- a future insert
-    # path that forgot to set it would have a genuinely-running row silently
-    # read as finished, stopping the dashboard ticker early and reporting a
-    # settled review that never happened. Omitting the column should raise at
-    # insert time, not resolve to a plausible-looking lie.
+    # 'running' | 'complete'. No default on purpose: a forgotten insert should
+    # raise rather than let a running row read as finished.
     status: Mapped[str] = mapped_column(String, nullable=False)
     transcript: Mapped[dict] = mapped_column(JSONB, nullable=False)
     decision: Mapped[str] = mapped_column(String, nullable=True)
@@ -186,16 +133,9 @@ class AuditLog(Base):
     action: Mapped[str] = mapped_column(String, nullable=False)
     before_state: Mapped[dict] = mapped_column(JSONB, nullable=True)
     after_state: Mapped[dict] = mapped_column(JSONB, nullable=True)
-    # The reviewer's own words for why, distinct from the agent's reasoning
-    # already sitting in before_state["decision"]/after_state -- a note here is
-    # a person answering "why did I decide this", which the agent's transcript
-    # cannot answer on their behalf.
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # clock_timestamp(), not now(): now() returns the time the enclosing
-    # transaction started, which is identical for every row written inside one
-    # transaction. Two decisions on the same invoice, made moments apart but
-    # committed together, would tie -- and a log whose entire purpose is
-    # chronological order should not have rows that cannot be told apart.
+    # clock_timestamp(), not now(): now() is transaction-start time, so rows
+    # written in one transaction would tie in a log that exists for its order.
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.clock_timestamp()
     )

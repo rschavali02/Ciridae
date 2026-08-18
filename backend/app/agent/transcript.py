@@ -8,21 +8,17 @@ from app.models import AgentRun
 class RunTranscript:
     """The record of one agent review: every tool call, and the final decision.
 
-    This is the single artifact three consumers read: the dashboard detail view,
-    the audit log, and the eval harness graders. Because the tool runner owns the
-    agent loop, tools record themselves here as they execute rather than being
-    recorded by a loop we control -- see `build_tools` in app/agent/runner.py.
+    Read by three consumers: the dashboard detail view, the audit log, and the
+    eval graders. Because the tool runner owns the agent loop, tools record
+    themselves here as they execute.
 
-    `decision` doubles as the completion signal: `submit_recommendation` sets it
-    as a side effect of running, so `transcript.decision is not None` is how
-    run_agent knows the agent has committed to an answer.
+    `decision` doubles as the completion signal -- `submit_recommendation` sets
+    it, so `transcript.decision is not None` is how run_agent knows the agent
+    has committed.
 
-    The in-memory lists are the source of truth; the row is a projection of them.
-    `begin` creates that row before the agent starts and each `record_tool_call`
-    given a session republishes it, so a review can be watched while it happens
-    rather than only read once it is over. A transcript that is never `begin`-ed
-    still works -- `save` inserts the row itself -- which is what keeps the eval
-    harness and the existing callers unchanged.
+    The in-memory lists are the source of truth; the row is a projection of
+    them. A transcript that is never `begin`-ed still works, since `save`
+    inserts the row itself.
     """
 
     def __init__(self, invoice_id: uuid.UUID, source: str = "live"):
@@ -62,31 +58,19 @@ class RunTranscript:
     def _projection(self) -> dict:
         """A point-in-time copy of the transcript, safe to assign to the row.
 
-        The copy is the load-bearing part, not housekeeping. Assigning a dict
-        that *references* `self.tool_calls` looks like a reassignment but does
-        not behave like one: the value SQLAlchemy holds as "old" is then the
-        same live list the next append mutates, so the old and new values
-        compare equal, the attribute is never marked dirty, and no UPDATE is
-        emitted.
+        The copy is load-bearing. Assigning a dict that *references*
+        `self.tool_calls` looks like a reassignment but is not: the value
+        SQLAlchemy holds as "old" is then the same live list the next append
+        mutates, so old and new compare equal, the attribute is never marked
+        dirty, and no UPDATE is emitted.
 
-        That failed silently and cost the whole point of writing per call. The
-        first flush worked -- `begin` seeds a *different* empty list, so there
-        was something to differ from -- and every flush after it was a no-op,
-        leaving the ticker frozen on tool call one for the length of a run
-        while the agent went on to make six more.
-
-        A shallow copy of the list is enough: each entry is built once in
-        `record_tool_call` and never mutated afterwards.
+        A shallow copy is enough -- entries are built once and never mutated.
         """
         return {"tool_calls": list(self.tool_calls), "reasoning": self.reasoning}
 
     async def _flush(self, session: AsyncSession) -> None:
         """Republish the in-memory transcript onto the row, if there is one."""
         if self._run is None:
-            # No `begin`, so nothing to update -- `save` will insert the whole
-            # transcript at the end. Silently skipping is deliberate: a caller
-            # that does not want live visibility should not be made to fail for
-            # passing a session.
             return
         self._run.transcript = self._projection()
         await session.commit()
@@ -100,10 +84,6 @@ class RunTranscript:
         self._run.status = "complete"
         self._run.decision = self.decision
         self._run.confidence = self.confidence
-        # Same copy as `_flush`, for the same reason. This one happens to survive
-        # without it -- `status` changing is enough to make the row dirty and drag
-        # the transcript along -- but relying on a sibling column to carry the
-        # write is exactly the accident that hid the bug in `_flush`.
         self._run.transcript = self._projection()
 
         await session.commit()

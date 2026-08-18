@@ -8,7 +8,6 @@ Create Date: 2026-08-13 16:53:07.330005
 from typing import Sequence, Union
 
 from alembic import op
-import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
@@ -19,16 +18,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """Upgrade schema."""
-    # Both current writers (RunTranscript.begin/save) already set status
-    # explicitly, so this default has never actually been exercised. Kept as
-    # 'complete' it fails in the wrong direction: a future insert path that
-    # forgot to set status would have a genuinely-running row silently read as
-    # finished. Dropping it makes an omission a NOT NULL violation at insert
-    # time instead of a plausible-looking lie in the dashboard.
+    """Drop the status default, so an omitted status fails instead of reading as complete."""
     op.alter_column('agent_runs', 'status', server_default=None)
 
 
 def downgrade() -> None:
-    """Downgrade schema."""
+    """Restore the complete default on agent run status."""
     op.alter_column('agent_runs', 'status', server_default='complete')

@@ -1,12 +1,11 @@
 """Plain implementations of the agent's tools.
 
-These are ordinary async functions taking a DB session, which keeps them
-unit-testable in isolation. `app/agent/runner.py` wraps each one in a decorated
-closure that binds the session and transcript, so the schema Claude sees never
-mentions either.
+Ordinary async functions taking a DB session, so they stay unit-testable in
+isolation. `app/agent/runner.py` wraps each in a closure binding the session and
+transcript, so the schema Claude sees never mentions either.
 
-Each returns a small, high-signal dict rather than raw rows -- the agent should
-be handed a conclusion it can reason about, not a table it has to summarize.
+Each returns a small dict rather than raw rows -- a conclusion the agent can
+reason about, not a table it has to summarize.
 """
 
 import uuid
@@ -22,18 +21,11 @@ from app.rag.search import search_policy as rag_search_policy
 
 VALID_DECISIONS = ("approve", "reject", "escalate")
 
-# Set from measured trigram scores against the seeded vendors, not by feel:
-#
+# Measured trigram scores against the seeded vendors:
 #   legitimate variants   "acme" 0.278 .. "acme incorporated llc" 0.818
-#   unrelated names       0.000 .. 0.071  ("globex corp" vs "acme incorporated")
-#
-# 0.2 sits in the empty gap between those bands, with room on both sides. The
-# plan's original 0.4 fell *inside* the legitimate band and would have rejected
-# "acme" -- escalating an invoice that should resolve cleanly.
-#
-# This is tuned against two seeded vendors. A real vendor master with hundreds
-# of names has a much fatter false-positive tail, so re-measure before trusting
-# this threshold on production data.
+#   unrelated names       0.000 .. 0.071
+# 0.2 sits in the empty gap between the bands. Re-measure before trusting this
+# against a real vendor master, which has a much fatter false-positive tail.
 SIMILARITY_THRESHOLD = 0.2
 
 # If the runner-up is within this of the best match, the name does not identify
@@ -44,14 +36,12 @@ AMBIGUITY_MARGIN = 0.10
 async def lookup_vendor(session: AsyncSession, vendor_name: str) -> dict:
     """Resolve a printed vendor name against the vendor master file.
 
-    Returns one of four shapes, because the agent needs to act differently on
-    each: a clean resolution, nothing close enough, several equally close
-    candidates (policy IV requires escalating the last two), or a payee already
-    drafted and waiting on a human.
+    Returns one of four shapes -- resolved, none, ambiguous, drafted -- because
+    the agent must act differently on each.
 
-    Only `active` vendors resolve. A drafted vendor must never match here, or
-    the next invoice from that payee resolves cleanly and the approval control
-    disappears rather than holding.
+    Only `active` vendors resolve. A drafted vendor matching here would let the
+    next invoice from that payee clear cleanly, and the approval control would
+    disappear rather than hold.
     """
     rows = (
         await session.execute(
@@ -71,9 +61,8 @@ async def lookup_vendor(session: AsyncSession, vendor_name: str) -> dict:
     ).all()
 
     if not rows:
-        # A second query rather than one filtered in Python, so the agent is
-        # told the difference between "nobody by that name" and "already
-        # drafted, waiting on a human" -- the two call for different actions.
+        # A separate query so the agent is told the difference between "nobody
+        # by that name" and "already drafted, waiting on a human".
         pending = (
             await session.execute(
                 text(
@@ -88,11 +77,9 @@ async def lookup_vendor(session: AsyncSession, vendor_name: str) -> dict:
             )
         ).first()
         if pending:
-            # Names the draft that actually matched, not the name printed on the
-            # invoice. The threshold above is deliberately loose, so an invoice
-            # reading "Nonesuch Trading Ltd" can match a draft for "Nonesuch
-            # Trading LLC" -- and reporting the invoice's spelling back would put
-            # a false statement into the transcript a human later reviews.
+            # Names the draft that matched, not the name printed on the invoice:
+            # the threshold is loose, so reporting the invoice's spelling back
+            # would put a false statement into the transcript a human reviews.
             return {
                 "match": "drafted",
                 "drafted_name": pending.name,
@@ -117,25 +104,16 @@ async def lookup_vendor(session: AsyncSession, vendor_name: str) -> dict:
             ],
         }
 
+    # The similarity score is withheld on a resolved match. It is calibrated
+    # against a distribution the agent cannot see -- 0.42 is unremarkable for
+    # "Acme Inc" vs "ACME Incorporated" but reads as poor on a 0-1 scale, and
+    # the agent has cut its confidence over exactly that. Scores are still
+    # returned on the ambiguous branch, where they are used comparatively.
     return {
         "match": "resolved",
         "vendor_id": str(best.id),
         "vendor_name": best.name,
         "bank_details": best.bank_details,
-        # The raw similarity score is deliberately withheld on a resolved match.
-        #
-        # It is calibrated against a measured distribution the agent has no
-        # access to: 0.42 is an unremarkable score for "Acme Inc" vs "ACME
-        # Incorporated", but on a 0-1 scale it reads as poor, and in the first
-        # live run the agent cited exactly that figure as its reason for cutting
-        # confidence to 0.82. A slightly shorter abbreviation would score lower
-        # still and could push a clean invoice under the escalation floor.
-        #
-        # Deciding whether the score clears the bar is this tool's job, already
-        # done. Passing the number along invites the agent to re-litigate a
-        # calibrated judgment with an uncalibrated one. Scores are still shown
-        # on the ambiguous branch, where they are used comparatively -- how
-        # close two candidates are -- rather than as an absolute quality signal.
     }
 
 
@@ -144,33 +122,25 @@ async def draft_vendor(
 ) -> dict:
     """Queue an unknown payee for human approval. Does not make it payable.
 
-    The agent prepares the record; a person completes it. Vendor master file
-    integrity is the primary fraud control in accounts payable, and on an
-    unknown invoice the only available source for bank details is the invoice
-    itself -- which is the document an attacker controls. So the details below
-    are stored unverified and the vendor stays unpayable until a human has
-    checked them out of band.
+    On an unknown invoice the only source for bank details is the invoice
+    itself, which is the document an attacker controls. So details are stored
+    unverified and the vendor stays unpayable until a human checks them out of
+    band.
     """
     normalized = vendor_name.strip().lower()
 
-    # Exact normalized-name match, not the trigram similarity `lookup_vendor`
-    # uses. This runs after that tool has already reported no match, and its job
-    # is only to keep repeat invoices from the same payee from queuing the same
-    # row three times.
+    # Exact normalized match, not trigram similarity: this runs after
+    # lookup_vendor already reported no match, and only exists to keep repeat
+    # invoices from queuing the same row three times.
     existing = (
         await session.execute(select(Vendor).where(Vendor.normalized_name == normalized))
     ).scalar_one_or_none()
     if existing is not None:
-        # Bank details arriving with a repeat invoice are compared, never
-        # silently dropped. Two invoices from one payee naming different
-        # accounts is close to the canonical vendor-fraud tell, and an early
-        # return that ignores the second set is the one path where that signal
-        # disappears without reaching either the agent or the human who later
-        # approves the vendor.
-        #
-        # The stored value is not overwritten: the first submission is no more
-        # trustworthy than the second, and quietly replacing it would destroy
-        # the discrepancy rather than surface it.
+        # Bank details on a repeat invoice are compared, never silently dropped:
+        # two invoices from one payee naming different accounts is close to the
+        # canonical vendor-fraud tell. The stored value is not overwritten --
+        # the first submission is no more trustworthy than the second, and
+        # replacing it would destroy the discrepancy rather than surface it.
         conflicting = (
             bank_details is not None
             and existing.bank_details is not None
@@ -221,35 +191,20 @@ async def get_invoice_history(
 ) -> dict:
     """Summarize what this vendor has already been paid.
 
-    Returns aggregates, never rows. The agent's question is "is this amount
-    normal for them?", and handing it a summary answers that directly, whereas
-    handing it 200 invoices makes it do arithmetic it is bad at and burns
-    context on data nobody reads again.
+    Aggregates, never rows: the question is "is this amount normal for them?".
+    Range travels with the average because an average alone cannot tell a tight
+    spend pattern from a wildly variable one.
 
-    Range is included alongside the average deliberately: an average alone
-    cannot tell a tight spend pattern from a wildly variable one, so on its own
-    it is a weak basis for calling an amount anomalous.
-
-    Only `approved` invoices feed the amount figures. History means what we have
-    actually paid -- counting the pending invoice under review would fold it
-    into its own baseline and shrink the very anomaly the agent is looking for.
-
-    Rejected invoices are deliberately kept out of the average and the range,
-    and the reason is adversarial rather than tidiness. If refused amounts
-    counted toward "normal", a payee could train the baseline: submit $50,000
-    three times, have it refused three times, and the figure now sits inside
-    the vendor's usual range so the fourth attempt reads as unremarkable.
-
-    They are still reported, as a bare count. "Three invoices from this vendor
-    were refused in the last year" is a real signal about the payee, it is just
-    a different question from "what do we normally pay them", and mixing the two
-    would let the first answer corrupt the second.
+    Only `approved` invoices feed the amount figures. Rejected ones are excluded
+    for an adversarial reason rather than a tidy one: if refused amounts counted
+    as normal, a payee could train the baseline by submitting $50,000 three
+    times and having it refused. They are still reported as a bare count, which
+    is a real signal about the payee but a different question.
     """
     since = datetime.now(timezone.utc) - timedelta(days=lookback_days)
 
-    # FILTER rather than a WHERE, because the two statuses are now aggregated
-    # over different subsets of the same rows and a WHERE could only express one
-    # of them. One pass over the vendor's invoices either way.
+    # FILTER rather than WHERE: the two statuses aggregate over different
+    # subsets of the same rows, and a WHERE could only express one of them.
     approved = Invoice.status == "approved"
 
     count, avg_amount, min_amount, max_amount, most_recent, rejected_count = (
@@ -269,9 +224,8 @@ async def get_invoice_history(
     ).one()
 
     def _as_float(value):
-        # None stays None rather than becoming 0.0: "no history" and "bills
-        # nothing" are different findings, and collapsing them would make every
-        # invoice from a new vendor look anomalous.
+        # None stays None: "no history" and "bills nothing" are different
+        # findings, and collapsing them makes every new vendor look anomalous.
         return float(value) if value is not None else None
 
     return {
@@ -281,8 +235,6 @@ async def get_invoice_history(
         "min_amount": _as_float(min_amount),
         "max_amount": _as_float(max_amount),
         "most_recent_date": most_recent.isoformat() if most_recent else None,
-        # Counted, never priced. See the note above on why the amounts are left
-        # out of the figures above.
         "rejected_count": rejected_count or 0,
     }
 
@@ -296,22 +248,14 @@ async def check_duplicate_invoice(
 ) -> dict:
     """Check whether this invoice has already been paid, or already refused.
 
-    Distinguishes `exact` from `near`, because the two demand different
-    actions: an exact re-submission is a confirmed duplicate and can be
-    rejected, while a near match is only suspicious and belongs in front of a
-    human. A single boolean would collapse that distinction and force the agent
-    to guess which it was looking at.
+    Distinguishes `exact` from `near` because the two demand different actions:
+    an exact re-submission can be rejected, a near match belongs in front of a
+    human. `previously_rejected` answers a third question -- a refused invoice
+    is not a payment, but resubmitting one unchanged should not come back clean
+    with the standing decision invisible.
 
-    `previously_rejected` answers a third question, and one the tool used to be
-    blind to. A refused invoice is not a payment and so cannot be duplicated,
-    which is why it was excluded -- but that meant resubmitting a rejected
-    invoice unchanged came back clean, and the standing decision of the person
-    who refused it was invisible to the agent reviewing it again.
-
-    `exclude_invoice_id` keeps the invoice under review from matching itself.
-    It is bound by the caller rather than supplied by the model -- the agent has
-    no business naming which row to ignore, and forgetting it means every clean
-    invoice reports as a duplicate of itself.
+    `exclude_invoice_id` keeps the invoice under review from matching itself,
+    and is bound by the caller rather than supplied by the model.
     """
     resembles = [Invoice.amount == amount]
     if invoice_number:
@@ -334,9 +278,7 @@ async def check_duplicate_invoice(
             and float(prior.amount) == amount
         )
 
-    # Paid invoices are checked first and reported unchanged. Money already out
-    # the door is the more serious finding, so a prior payment outranks a prior
-    # refusal when both exist.
+    # Paid invoices first: money already out the door outranks a prior refusal.
     paid = (await session.execute(_candidates("approved"))).scalars().all()
 
     if paid:
@@ -359,13 +301,9 @@ async def check_duplicate_invoice(
             },
         }
 
-    # Nothing was paid, so ask the other question: has a person already refused
-    # this? Previously the answer was unreachable, and a rejected invoice
-    # resubmitted unchanged came back "none" -- the agent re-reasoned from
-    # scratch with no idea a human had already declined it, and could approve
-    # what was refused last week. Reported under its own match rather than as a
-    # duplicate, because nothing was duplicated: the finding is the standing
-    # decision, not a second payment.
+    # Nothing paid, so ask the other question. Reported under its own match
+    # rather than as a duplicate: the finding is the standing decision, not a
+    # second payment.
     refused = (await session.execute(_candidates("rejected"))).scalars().all()
 
     if refused:
@@ -409,17 +347,10 @@ async def get_purchase_order(
     """Look up a purchase order and measure how far the invoice diverges from it.
 
     Reports arithmetic, not a verdict. The variance is computed here because
-    percentage arithmetic is exactly the sort of thing a model gets subtly
-    wrong; whether that variance is *acceptable* is deliberately left open,
-    because the governing threshold lives in the AP policy rather than in this
-    codebase.
-
-    That split is load-bearing in two ways. Encoding the threshold here would
-    let the agent clear the PO-tolerance eval cases without ever consulting the
-    policy, which would make the before/after RAG measurement meaningless. It
-    would also put a business rule somewhere a policy revision cannot reach --
-    the threshold would silently drift out of date the next time Finance
-    reissues the document.
+    percentage arithmetic is what a model gets subtly wrong; whether it is
+    *acceptable* is left open, because that threshold lives in the AP policy.
+    Encoding it here would also let the agent clear the PO cases without ever
+    consulting the policy.
     """
     po = (
         await session.execute(select(PurchaseOrder).where(PurchaseOrder.po_number == po_number))
@@ -442,16 +373,15 @@ async def get_purchase_order(
     }
 
     # None, not False, when either side is unrecorded: "we know they differ" and
-    # "we cannot tell" are different findings, and collapsing the second into
-    # the first would hold every invoice predating the currency column.
+    # "we cannot tell" are different findings.
     currencies_known = po.currency is not None and invoice_currency is not None
     result["currency_match"] = (
         po.currency == invoice_currency if currencies_known else None
     )
 
     if currencies_known and po.currency != invoice_currency:
-        # Deliberately no variance. Subtracting figures in different units
-        # produces a number that looks authoritative and means nothing.
+        # No variance: subtracting figures in different units produces a number
+        # that looks authoritative and means nothing.
         result["detail"] = (
             f"Invoice is in {invoice_currency} and the purchase order in "
             f"{po.currency}; the amounts differ in unit and cannot be compared. "
@@ -473,20 +403,14 @@ async def get_purchase_order(
 def submit_recommendation(decision: str, confidence: float, reasoning: str) -> dict:
     """Record the agent's final decision, subject to a confidence floor.
 
-    The agent proposes; this function decides. Below the configured threshold
-    the decision becomes `escalate` regardless of what the agent asked for --
-    the whole point of the floor is that a model which is confidently wrong
-    must not be able to talk its way past human review.
+    The agent proposes; this function decides. Below the threshold the decision
+    becomes `escalate` regardless -- a model that is confidently wrong must not
+    be able to talk its way past human review. The override applies to
+    rejections too: wrongly refusing a legitimate invoice stalls a real payment,
+    so uncertainty in either direction goes to a person.
 
-    The override applies to rejections as well as approvals. Refusal is not the
-    safe default: wrongly rejecting a legitimate invoice stalls a real payment
-    and damages a vendor relationship. Both directions carry consequences, so
-    uncertainty in either sends the invoice to a person.
-
-    Malformed input escalates rather than raising. Raising would abort the run
-    and leave the invoice with no decision at all, whereas escalating keeps it
-    moving toward the person who can sort it out -- the same failure direction
-    the confidence floor already encodes.
+    Malformed input escalates rather than raising, which would abort the run and
+    leave the invoice with no decision at all.
     """
     reasons: list[str] = []
 
@@ -500,9 +424,8 @@ def submit_recommendation(decision: str, confidence: float, reasoning: str) -> d
             f"{settings.confidence_escalation_threshold} threshold for automated action"
         )
 
-    # An explicit escalate is already the outcome the floor would force, so it
-    # is not an override. Flagging it as one would make the audit trail read as
-    # though the system overruled an agent that in fact agreed.
+    # An explicit escalate is already what the floor would force, so it is not
+    # an override -- flagging it would read as overruling an agent that agreed.
     overridden = bool(reasons) and decision != "escalate"
     final_decision = "escalate" if reasons else decision
 
@@ -520,26 +443,17 @@ async def search_policy_tool(session: AsyncSession, query: str) -> dict:
     """Search the written AP policy for the clauses governing this invoice.
 
     Named `_tool` because `app.rag.search.search_policy` is the retrieval
-    function it wraps; the agent-facing name stays `search_policy`, bound in
-    `build_tools`.
+    function it wraps; the agent-facing name stays `search_policy`.
 
-    Each clause carries the section it came from, not just its text. That is
-    what lets the agent cite "per §II" rather than paraphrasing an unattributed
-    rule, and what lets the groundedness grader check the citation against what
-    was actually returned. A bare wall of text would make both impossible.
-
-    Similarity scores are deliberately not returned, for the same reason
-    `lookup_vendor` withholds them: they are calibrated against a distribution
-    the agent cannot see, and inviting it to weigh a rule by its distance score
-    replaces a retrieved fact with an uncalibrated judgement.
+    Each clause carries its section, which is what lets the agent cite "per §II"
+    and lets the groundedness grader check that citation. Similarity scores are
+    withheld for the same reason `lookup_vendor` withholds them.
     """
     documents = await rag_search_policy(session, query=query, top_k=POLICY_TOP_K)
 
     if not documents:
         # pgvector always returns the nearest rows, so nothing coming back means
-        # the table is empty -- the corpus was never loaded. Saying so keeps a
-        # misconfigured eval run from looking like a policy that simply had no
-        # answer, which would be scored as the agent's failure rather than ours.
+        # the table is empty -- the corpus was never loaded.
         return {
             "clauses": [],
             "detail": (

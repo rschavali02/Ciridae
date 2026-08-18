@@ -1,13 +1,9 @@
 """Wires the agent's tools into the SDK Tool Runner.
 
-The Runner owns the request -> execute -> loop cycle, so there is no hand-written
-`while`, no JSON schema array to maintain, and no name->function dispatch table.
-Each schema is derived from the wrapper's signature and docstring instead.
-
-That derivation is the constraint shaping this module: a tool's parameters are
-exactly what Claude is asked to supply. Anything the model must not choose --
-the DB session, the transcript, which invoice row to skip -- is closed over
-here rather than declared as a parameter.
+The Runner owns the request -> execute -> loop cycle, and derives each tool's
+schema from the wrapper's signature and docstring. So anything the model must
+not choose -- the session, the transcript, which invoice row to skip -- is
+closed over here rather than declared as a parameter.
 """
 
 import json
@@ -27,8 +23,8 @@ client = AsyncAnthropic(api_key=settings.anthropic_api_key)
 
 MODEL = "claude-opus-5"
 
-# Thinking is on by default on this model and shares max_tokens with the
-# response, so a budget sized for the visible answer alone truncates mid-run.
+# Thinking shares this budget with the response, so a budget sized for the
+# visible answer alone truncates mid-run.
 MAX_TOKENS = 16000
 
 MAX_ITERATIONS = 8
@@ -37,14 +33,9 @@ MAX_ITERATIONS = 8
 def build_tools(session: AsyncSession, transcript: RunTranscript, invoice: Invoice) -> list:
     """Build the tool set for one invoice review.
 
-    Every tool is a closure over `session`, `transcript`, and `invoice`. Tools
-    record themselves to the transcript as they run, because the Runner owns the
-    loop -- there is no outer iteration of ours in which to record them.
-
-    Each recording is handed the session so it lands in the `agent_runs` row
-    immediately rather than at the end of the run. A review takes 30-60s; a
-    transcript only written afterwards leaves nothing to watch for that whole
-    time, which is the same reason there is no outer loop to record from.
+    Tools record themselves to the transcript as they run, passing the session
+    so each call lands in the agent_runs row immediately -- the dashboard polls
+    that row during the 30-60s a review takes.
     """
 
     @beta_async_tool
@@ -60,26 +51,13 @@ def build_tools(session: AsyncSession, transcript: RunTranscript, invoice: Invoi
         """
         out = await tool_impls.lookup_vendor(session, vendor_name=vendor_name)
 
-        # Write the resolution onto the invoice, not just into the transcript.
-        #
-        # Nothing else ever sets `invoices.vendor_id`: `apply_extraction` writes
-        # every field the LLM reads off the page, but the page carries a vendor
-        # *name*, and turning that into an id is this tool's job. Left unwritten,
-        # an uploaded invoice keeps vendor_id NULL for good, and the two checks
-        # that filter on it stop seeing it -- `check_duplicate_invoice` cannot
-        # match a resubmission against a previously uploaded and approved copy,
-        # and an approved upload never joins the vendor's payment history for
-        # the next invoice to be compared against. Both fail open, silently.
-        #
-        # Only on `resolved`. A `drafted` match names a payee awaiting human
-        # approval, and pointing the invoice at it would quietly assert a link
-        # the approval control exists to withhold.
+        # Nothing else sets invoices.vendor_id, and the history and duplicate
+        # checks both filter on it. Only on `resolved`: pointing the invoice at
+        # a drafted vendor would assert a link the approval control withholds.
         if out.get("match") == "resolved":
             invoice.vendor_id = uuid.UUID(out["vendor_id"])
-            # Committed here rather than left to the transcript flush below:
-            # `_flush` returns without committing when the run has no row yet,
-            # so relying on it would make this write conditional on something
-            # unrelated to it.
+            # Committed here, not left to _flush -- that returns early when the
+            # run has no row yet.
             await session.commit()
 
         await transcript.record_tool_call(
@@ -126,9 +104,8 @@ def build_tools(session: AsyncSession, transcript: RunTranscript, invoice: Invoi
             invoice_number: The invoice number, if the invoice carries one.
         """
         args = {"vendor_id": vendor_id, "amount": amount, "invoice_number": invoice_number}
-        # Bound, not asked of the model: the invoice under review is already a
-        # row in `invoices`, and without excluding it a vendor+amount query
-        # finds itself, reporting every clean invoice as its own duplicate.
+        # Bound, not asked of the model: without excluding the invoice under
+        # review, a vendor+amount query finds itself.
         out = await tool_impls.check_duplicate_invoice(
             session, **args, exclude_invoice_id=invoice.id
         )
@@ -146,10 +123,8 @@ def build_tools(session: AsyncSession, transcript: RunTranscript, invoice: Invoi
         Args:
             po_number: The purchase order number referenced on the invoice.
         """
-        # invoice_amount and invoice_currency are bound rather than asked for:
-        # both are already known authoritatively, and having the model restate
-        # them invites a transcription slip that would corrupt the variance
-        # figure -- or the currency comparison -- silently.
+        # Amount and currency are bound rather than asked for: both are already
+        # known, and restating them invites a slip that corrupts the variance.
         out = await tool_impls.get_purchase_order(
             session,
             po_number=po_number,
@@ -243,9 +218,8 @@ def build_tools(session: AsyncSession, transcript: RunTranscript, invoice: Invoi
 def describe_invoice(invoice: Invoice) -> str:
     """Render the invoice for the opening prompt.
 
-    Fields are selected explicitly rather than dumped from `invoice.__dict__`,
-    which would ship SQLAlchemy's `_sa_instance_state` into the prompt and
-    silently change what the model sees whenever the schema changes.
+    Fields are listed explicitly rather than dumped from `invoice.__dict__`,
+    which would ship SQLAlchemy internals into the prompt.
     """
     return json.dumps(
         {
@@ -265,9 +239,8 @@ async def run_agent(
 ) -> RunTranscript:
     """Review one invoice and return the transcript of how it was decided."""
     transcript = RunTranscript(invoice_id=invoice.id, source=source)
-    # Before the first tool call, not after the last: the row is what the
-    # dashboard polls, so it has to exist for the length of the run rather than
-    # appear once there is nothing left to watch.
+    # Before the first tool call: the dashboard polls this row for the length
+    # of the run.
     await transcript.begin(session)
 
     runner = client.beta.messages.tool_runner(
@@ -283,32 +256,20 @@ async def run_agent(
 
     try:
         async for _message in runner:
-            # submit_recommendation settles the transcript as a side effect of
-            # running, so a recorded decision is how we know the agent has
-            # committed. Breaking here skips the wrap-up turn it would otherwise
-            # spend narrating a decision already made.
+            # submit_recommendation settles the transcript as a side effect, so
+            # a recorded decision means the agent has committed. Breaking skips
+            # the wrap-up turn narrating a decision already made.
             if transcript.decision is not None:
                 break
     except Exception as exc:
-        # The tool runner swallows exceptions raised inside a tool call --
-        # turns them into an error tool_result and keeps looping -- so
-        # whatever reaches here escaped that handling entirely. The likely
-        # cause is a poisoned session: every tool shares one AsyncSession for
-        # the whole run, and any failed DB call inside it (deadlock, dropped
-        # connection, constraint violation) leaves that session needing a
-        # rollback before it can be used again. Nothing upstream provides one,
-        # so every later tool call degrades the same way, and the exception
-        # that actually surfaces is often the *next* unrelated query rather
-        # than the one that caused the poisoning.
+        # The tool runner turns in-tool exceptions into error tool_results and
+        # keeps looping, so anything reaching here escaped that -- usually a
+        # session left needing a rollback by an earlier failed query.
         #
-        # Without this, the run's agent_runs row is abandoned at
-        # status="running" forever: the dashboard ticker polls it
-        # indefinitely showing stale progress, and the invoice matches
-        # neither the approved nor the held bucket on the queue, so it
-        # disappears from the primary triage screen entirely. Silence must
-        # never resolve toward payment applies here too -- a crash is
-        # unresolved, and unresolved must read as escalate, not as "still in
-        # progress" with no way to tell the two apart.
+        # Without this the run's row is abandoned at status="running" forever:
+        # the ticker polls it indefinitely and the invoice falls out of every
+        # queue bucket. A crash is unresolved, and unresolved must read as
+        # escalate rather than as "still in progress".
         await session.rollback()
         transcript.record_final(
             decision="escalate",
@@ -319,8 +280,8 @@ async def run_agent(
         raise
 
     if transcript.decision is None:
-        # Out of iterations with nothing submitted. Escalate rather than leave
-        # the invoice undecided -- silence must never resolve toward payment.
+        # Out of iterations with nothing submitted. Silence must never resolve
+        # toward payment.
         transcript.record_final(
             decision="escalate",
             confidence=0.0,

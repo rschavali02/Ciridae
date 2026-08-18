@@ -1,20 +1,7 @@
 """Split the AP policy into citable chunks.
 
-The obvious approach does not work here. Splitting on `\\n\\n` returns the entire
-26,000-character document as a single chunk, because PDF extraction produces no
-blank lines at all -- every line break is a wrap, not a paragraph. That failure
-is silent: you get one chunk back and a retrieval tool that always returns the
-whole policy.
-
-So the split runs on the document's own numbered headings, which survive
-extraction intact: roman numerals (`I. Purpose`), letters (`A. Segregation of
-duties`), and `Step N:` markers. Each chunk keeps its heading, which is what
-makes a retrieved clause citable -- the agent can say "per §II" and the
-groundedness grader can check that against the text it was given.
-
-Three properties of the real document force the cleanup below: page furniture
-repeats on all 15 pages, the table of contents mimics headings, and some
-sections run past a comfortable chunk size.
+Splitting on the document's own numbered headings -- roman numerals, letters,
+and `Step N:` markers -- making a retrieved clause citable.
 """
 
 import re
@@ -22,33 +9,25 @@ from dataclasses import dataclass
 
 HEADING_RE = re.compile(r"^(?:(?:[IVX]+|[A-H])\.\s+\S|Step\s+\d+\s*:)")
 
-# Repeats on every page of the source PDF. Embedded once per page, this
-# boilerplate outweighs the rules it surrounds and surfaces on every query.
+# Repeats on every page. Embedded per page, it outweighs the rules around it.
 PAGE_FURNITURE = {
     "UNFPA",
     "Policies and Procedures Manual",
     "Policy and Procedures on Accounts Payable",
 }
 
-# Past this, a chunk is a chapter rather than a rule: retrieval returns a wall of
-# text, most of it irrelevant to the query that matched one sentence inside it.
+# Past this a chunk is a chapter rather than a rule.
 MAX_CHUNK_CHARS = 1500
 
 
 @dataclass
 class PolicyChunk:
-    section: str  # the heading this chunk lives under, e.g. "II. Policy"
-    text: str  # the rule itself, with wrapped lines rejoined
+    section: str  
+    text: str  
 
     @property
     def embed_text(self) -> str:
-        """Heading plus body, which is what gets embedded.
-
-        A query like "how much can an invoice differ from its PO" should be able
-        to match on the part of the policy a rule belongs to, not only on the
-        wording of the rule. The body alone is stored for display, since the
-        heading is shown separately.
-        """
+        """Heading plus body, so a query can match on the section a rule belongs to."""
         return f"{self.section}\n{self.text}"
 
 
@@ -57,21 +36,17 @@ def _is_noise(line: str) -> bool:
         return True
     if line in PAGE_FURNITURE:
         return True
-    if line.isdigit():  # bare page number
+    if line.isdigit():  
         return True
     if line.startswith("Effective date:"):
         return True
-    if "....." in line:  # table-of-contents entry, trailing dot leaders
+    if "....." in line: 
         return True
     return False
 
 
 def _split_long(section: str, body: str) -> list[PolicyChunk]:
-    """Sub-split an over-long section on sentence boundaries.
-
-    Sentence boundaries rather than a character count, so a chunk never ends
-    mid-clause -- a rule cut in half retrieves poorly and cites misleadingly.
-    """
+    """Sub-split an over-long section on sentence boundaries, never mid-clause."""
     if len(body) <= MAX_CHUNK_CHARS:
         return [PolicyChunk(section=section, text=body)]
 

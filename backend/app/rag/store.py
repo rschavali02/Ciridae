@@ -12,15 +12,10 @@ async def store_policy_chunks(
 ) -> list[Document]:
     """Embed each chunk and store it.
 
-    What gets embedded and what gets stored deliberately differ. The vector is
-    built from `embed_text` -- heading plus body -- so a query about purchase
-    order tolerances can match on the part of the policy a rule belongs to, not
-    only on its wording. `chunk_text` holds the body alone, because that is what
-    is shown back to the agent, with the heading supplied separately as the
-    citation.
-
-    One batched call rather than one per chunk: the corpus is 25 chunks and the
-    free tier's rate limit is per request, not per token.
+    What is embedded and what is stored differ: the vector is built from
+    heading plus body so a query can match on the section a rule belongs to,
+    while `chunk_text` holds the body alone, since the heading is shown
+    separately as the citation.
     """
     embeddings = embed_texts([chunk.embed_text for chunk in chunks], input_type="document")
 

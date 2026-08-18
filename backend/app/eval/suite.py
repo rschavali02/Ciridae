@@ -16,9 +16,7 @@ agent that escalates everything scores well, which is the one-sided
 optimization the suite exists to make impossible.
 
 `needs_policy` marks the cases whose correct answer lives only in the policy
-document. They are expected to fail at the Phase 4 baseline. That gap is the
-measurement, not a defect -- Phase 5 adds retrieval and reruns this identical
-file.
+document.
 """
 
 from app.eval.cases import EvalCase
@@ -27,9 +25,6 @@ ACME = {
     "name": "ACME Incorporated",
     "normalized_name": "acme incorporated",
     "bank_details": "IBAN GB00ACME00000000000001",
-    # Stated, not defaulted: the column defaults to `pending_approval` so that
-    # nothing becomes payable by omission. A case seeded with a pending vendor
-    # would test vendor drafting rather than whatever the case is about.
     "approval_status": "active",
 }
 
@@ -37,35 +32,22 @@ ACME = {
 def routine_history(amounts: list[float], first_number: int) -> list[dict]:
     """Prior payments that should read as entirely unremarkable.
 
-    A case seeded with no history at all is not a neutral case. `get_invoice_history`
-    returns count 0, which the agent correctly reads as a first-time payee whose bank
-    details nobody has confirmed -- a real reason to escalate, and one that has nothing
-    to do with what most of these cases are testing. Left in, it survives Phase 5: the
-    agent learns the policy, still escalates for the unrelated reason, and retrieval
-    looks like it did nothing.
+    No history is not a neutral seed: count 0 reads as a first-time payee, which
+    is its own reason to escalate and confounds whatever the case is testing.
 
-    Two constraints on what goes in here, both of which bite silently:
-
-    * No amount may equal the invoice under review. `check_duplicate_invoice` matches
-      on amount OR invoice number, so a prior payment for the same amount reports as a
-      near-duplicate -- trading one confound for a worse one.
-    * Invoice numbers must be distinct from each other and from the invoice under
-      review, for the same reason.
+    Two constraints, both of which bite silently: no amount and no invoice
+    number here may equal the invoice under review, or `check_duplicate_invoice`
+    reports a near-duplicate.
     """
     return [
         {"amount": amount, "invoice_number": f"INV-{first_number + index}"}
         for index, amount in enumerate(amounts)
     ]
 
-# The tool Phase 5 adds. Named here rather than inline so the baseline and the
-# rerun cannot disagree about the spelling -- a mismatch would show up as five
-# cases failing the tool grader even after retrieval works, which looks exactly
-# like RAG not helping.
+
 SEARCH_POLICY = "search_policy"
 
 CASES = [
-    # -- Answerable from the structured tools alone. These should pass at the
-    # -- Phase 4 baseline, before any policy retrieval exists.
     EvalCase(
         name="01_clean_approve",
         vendor=ACME,
@@ -93,8 +75,6 @@ CASES = [
         expected_tools=["check_duplicate_invoice"],
     ),
     EvalCase(
-        # Pairs with 02. Same vendor, same amount, suffixed number -- close
-        # enough to be suspicious, not close enough to refuse outright.
         name="03_near_duplicate_escalate",
         vendor=ACME,
         invoice={
@@ -107,9 +87,6 @@ CASES = [
         expected_tools=["check_duplicate_invoice"],
     ),
     EvalCase(
-        # The drift exists only in `raw_text`; the seeded row carries the real
-        # vendor_id, which the agent never sees. It has to read "Acme Inc" off
-        # the invoice and resolve it, which is the whole point of the case.
         name="04_vendor_name_drift_approve",
         vendor=ACME,
         invoice={
@@ -122,18 +99,13 @@ CASES = [
         expected_tools=["lookup_vendor"],
     ),
     EvalCase(
-        # §III.A Step 1 -- the vendor must be correctly set up before goods or
-        # services are delivered, so an unknown payee is a stop, not a guess.
         name="05_vendor_not_on_file_escalate",
         vendor=None,
         invoice={"amount": 500.0, "raw_text": "Nonesuch Trading LLC invoice, $500, no PO."},
         expected_decision="escalate",
         expected_tools=["lookup_vendor"],
     ),
-    # -- Answerable only from the policy. Expected to fail at the baseline.
     EvalCase(
-        # $400 on a $6,000 PO: 6.7%, and the lesser limit is 10% ($600) rather
-        # than the $1,000 cap. Inside both, so this one approves.
         name="06_po_variance_within_tolerance_approve",
         vendor=ACME,
         invoice={
@@ -149,8 +121,6 @@ CASES = [
         needs_policy=True,
     ),
     EvalCase(
-        # Pairs with 06. $3,000 on a $20,000 PO: 15% and $3,000, outside the
-        # percentage and the cap both. No reading of §II lets this through.
         name="07_po_variance_outside_tolerance_escalate",
         vendor=ACME,
         invoice={
@@ -166,13 +136,7 @@ CASES = [
         needs_policy=True,
     ),
     EvalCase(
-        # The precision test. $1,600 on a $40,000 PO is 4% -- comfortably inside
-        # the percentage -- but the lesser of the two limits is the $1,000 cap,
-        # and $1,600 clears it. An agent that skims "10 percent" approves this.
-        #
-        # Deliberately sized under $50,000. §IV.F sends anything above that to
-        # the Chief of Accounts, which would hand the case a second, unrelated
-        # reason to escalate and let a sloppy reading reach the right answer.
+        # Sized under $50,000 on purpose, policy would escalate if above
         name="08_po_variance_lesser_of_two_escalate",
         vendor=ACME,
         invoice={
@@ -188,10 +152,6 @@ CASES = [
         needs_policy=True,
     ),
     EvalCase(
-        # The policy defers the PO-required threshold to the Procurement
-        # Procedures, which are not in the corpus. Correct behaviour is to
-        # escalate rather than invent a number -- this tests whether the agent
-        # recognizes the edge of what it actually read.
         name="09_large_invoice_no_po_escalate",
         vendor=ACME,
         invoice={
@@ -215,19 +175,6 @@ CASES = [
         expected_tools=["get_invoice_history"],
     ),
     EvalCase(
-        # §IV.F reads the other way round from the intuition: local currency is
-        # the norm and USD is the exception needing authorization. So a EUR
-        # invoice is ordinary business and should approve, with the currency
-        # handling cited rather than flagged as an anomaly.
-        # Both rows carry a real currency, deliberately. Before Task 1's schema
-        # change this case had no currency column to seed, so invoice and PO
-        # were both NULL and get_purchase_order's currencies_known check was
-        # False -- it fell back to the old bare-numeral comparison and this
-        # case passed without ever exercising currency-aware matching at all.
-        # It is EUR on both sides because the case tests whether the agent
-        # approves an ordinary same-currency invoice under §IV.F, not whether
-        # it flags a genuine cross-currency mismatch -- that is a distinct,
-        # not-yet-written case.
         name="11_non_usd_currency_approve",
         vendor=ACME,
         invoice={
@@ -246,8 +193,6 @@ CASES = [
         needs_policy=True,
     ),
     EvalCase(
-        # No amount survived the scan, so there is nothing to check and nothing
-        # to be confident about. The confidence floor should carry this one.
         name="12_low_quality_scan_forced_escalate",
         vendor=None,
         invoice={"amount": None, "raw_text": "???ACME??? invoi... $5??.00 ... due ??/??/2026"},

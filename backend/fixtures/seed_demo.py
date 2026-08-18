@@ -1,44 +1,10 @@
-"""Reset the database to a clean, demo-ready state and seed the Stark
-Industries and Acme Inc scenarios.
+"""Reset the database to a demo-ready state.
 
 Run: python -m fixtures.seed_demo
 
-Wipes every data-bearing table except `documents` (the policy corpus --
-re-embedding it costs real Voyage calls for no reason before a demo) and
-reseeds:
-
-- The standing vendor master: ACME Incorporated, Globex Corp, Stark
-  Industries -- all `active`, so lookup_vendor resolves cleanly and
-  draft_vendor is never triggered for any of them.
-- Three past *approved* invoices each for Stark Industries and ACME
-  Incorporated, bracketing the demo invoices' amounts. Without these,
-  get_invoice_history returns count=0 for what reads as a first-time payee,
-  and the agent has been observed treating that as a caution worth a lower
-  confidence -- a real risk in an unscripted live run with no second take.
-  None of the seeded amounts equal a demo invoice's amount or each other's
-  invoice numbers: check_duplicate_invoice matches on amount OR invoice
-  number, so a collision would misfire as a duplicate finding.
-- Two purchase orders, both sized so §II decides the outcome arithmetically
-  rather than by model judgment. PO-88213 at $5,000 puts the seeded Acme
-  invoice's $5,700 outside the tolerance; PO-77401 at $9,500 puts the live
-  Stark upload's $9,780.10 inside it. One clause, two outcomes -- see the
-  ACME_PO and STARK_PO comments below for the arithmetic.
-- Two already-decided Acme Inc invoices -- one approved, one escalated --
-  each a complete Invoice + AgentRun pair with a hand-built transcript using
-  the exact tool-output shapes `app/agent/tools.py` produces, so they render
-  in the dashboard identically to a live run without needing one. Their
-  `Invoice.status` stays "pending": the agent has decided, but no human has
-  acted, which is exactly the state a real reviewer would find them in.
-
-`invoice_05.pdf` (Stark Industries) is NOT seeded as a row here -- it is
-uploaded live during the demo. Seeding it would mean demoing an invoice that
-already has a decision. Its PO *is* seeded above, because the agent can only
-reach `get_purchase_order` if the number it reads off the document resolves
-to something. The document was regenerated to print "PO-77401" for exactly
-that reason: the earlier version referenced no PO, so §III's unanswerable
-"was a PO required at this amount?" question was the only PO-shaped thing
-the agent could reason about, and it escalated -- correctly, and unhelpfully
-for a demo.
+Wipes every table except the policy corpus, then seeds the vendor master,
+payment history, two purchase orders, and two already-decided Acme invoices.
+Stark's invoice_05.pdf is left out on purpose -- it is uploaded live in the demo.
 """
 
 import asyncio
@@ -49,10 +15,7 @@ from sqlalchemy import text
 from app.db import SessionLocal
 from app.models import AgentRun, Invoice, LineItem, PurchaseOrder, Vendor
 
-# Same order used by the eval harness's per-trial reset: children before the
-# tables they reference. `documents` (the policy corpus) is deliberately
-# excluded -- it costs real embedding calls to rebuild and nothing here
-# touches it.
+# Children first. `documents` is excluded: re-embedding it costs real API calls.
 _TABLES = ("agent_runs", "audit_log", "line_items", "invoices", "purchase_orders", "vendors")
 
 VENDORS = [
@@ -76,51 +39,27 @@ VENDORS = [
     },
 ]
 
-# Brackets the $9,780.10 demo invoice (INV-1004) without matching it or each
-# other -- see the module docstring for why an exact match would misfire.
+# Brackets the $9,780.10 demo invoice without matching its amount or number.
 STARK_HISTORY = [
     {"invoice_number": "INV-0901", "amount": 9200.00},
     {"invoice_number": "INV-0930", "amount": 9650.00},
     {"invoice_number": "INV-0965", "amount": 10100.00},
 ]
 
-# Backs get_invoice_history/check_duplicate_invoice for both seeded Acme
-# invoices below (invoice_01.pdf's $2,805.84, clean_acme.pdf's $5,700.00) --
-# neither amount nor invoice number collides with this list.
+# Brackets both seeded Acme invoices without colliding with either.
 ACME_HISTORY = [
     {"invoice_number": "INV-0501", "amount": 2600.00},
     {"invoice_number": "INV-0530", "amount": 4200.00},
     {"invoice_number": "INV-0560", "amount": 5900.00},
 ]
 
-# clean_acme.pdf prints "PO-88213" and totals $5,700.00. Seeding the PO at
-# $5,000 makes the escalation deterministic policy math, not a model judgment
-# call: variance = |5700 - 5000| = $700 (14.0%); §II caps the allowable
-# variance at the LESSER of 10% of the PO ($500) or $1,000 -- so $700 exceeds
-# the cap on both the percentage and dollar basis.
+# $5,700 invoice against a $5,000 PO: $700 over, outside §II's cap. Escalates.
 ACME_PO = {"po_number": "PO-88213", "amount": 5000.00, "currency": "USD"}
 
-# The other side of the §II demo: the same clause, applied to an invoice that
-# passes it. invoice_05.pdf prints "PO-77401" and totals $9,780.10, so the
-# variance is $280.10 (2.95%) against the LESSER of 10% of the PO ($950) or
-# $1,000 -- inside the cap on both bases, so it should approve *because* the
-# agent read the rule, not because no rule applied.
-#
-# That distinction is the point of seeding this at all. Every other approval in
-# the demo is a no-PO invoice where §II simply does not bite, which leaves
-# retrieval looking like a brake that only ever blocks. This is the one beat
-# where a retrieved clause is what lets a payment through.
-#
-# Sized well clear of the cap rather than just under it. A variance a few
-# dollars inside $950 would make a correct approval indistinguishable from a
-# rounding error in front of an audience, and would turn any drift in the
-# extracted total into a live coin flip.
+# $9,780.10 invoice against a $9,500 PO: $280 over, well inside §II's cap.
 STARK_PO = {"po_number": "PO-77401", "amount": 9500.00, "currency": "USD"}
 
-# The real §II clause, retrieved verbatim from the live `documents` table
-# rather than invented, so the seeded search_policy tool call and the
-# escalation reasoning below are consistent with what the policy actually
-# says if anyone inspects the tool-call timeline.
+# Verbatim §II, so the seeded transcripts cite what the policy actually says.
 POLICY_II_TEXT = (
     "This policy identifies control actions to mitigate potential risks related to "
     "accounts payable and establishes the following:  All invoices must be verified "
@@ -165,9 +104,7 @@ async def seed() -> None:
         session.add_all([PurchaseOrder(**ACME_PO), PurchaseOrder(**STARK_PO)])
         await session.flush()
 
-        # Both seeded Acme invoices share the same vendor resolution and
-        # payment-history findings -- only the PO check and final decision
-        # differ. Computed once here rather than duplicated per-transcript.
+        # Shared by both transcripts; only the PO check and decision differ.
         acme_id = str(acme.id)
         history_since = datetime.now(timezone.utc).isoformat()
 

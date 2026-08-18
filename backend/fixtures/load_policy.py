@@ -1,15 +1,8 @@
-"""Load the AP policy into the `documents` table.
+"""Load the AP policy into the `documents` table, replacing any existing chunks.
 
 Run: python -m fixtures.load_policy
 
-The eval harness deliberately does not wipe `documents` between trials, so the
-corpus must be sitting in the database before a run rather than being built
-inside it -- an empty table makes `search_policy` return nothing and the whole
-Phase 5 comparison measures a broken tool instead of retrieval.
-
-Replaces rather than appends. Running this twice against an appending loader
-would leave two copies of all 25 chunks, and duplicates crowd a top-5 result
-with the same clause twice, pushing out the clause the agent actually needed.
+Nothing else populates the corpus, and `search_policy` returns nothing until it is.
 """
 
 import asyncio

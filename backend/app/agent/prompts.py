@@ -1,24 +1,4 @@
-"""System prompts for the AP review agent.
-
-PHASE 5 VERSION. The Phase 3 prompt said nothing about the policy, deliberately:
-`search_policy` did not exist, and telling the agent to consult a document it
-could not read would have pushed it toward inventing rules and contaminated the
-baseline the comparison is measured against.
-
-Two lines changed when retrieval arrived, and both are aimed at a specific
-baseline failure rather than at the tool's existence.
-
-The purchase order check used to read "if the invoice references a purchase
-order, look it up". Conditional on the PO being *present*, which meant an
-invoice carrying none never raised the subject at all -- the agent ran its three
-structured checks, found them clean, and approved a $40,000 invoice three times
-out of three. Asking whether one was *required* turns an absence into a
-question.
-
-The closing line addresses the reasoning that produced those approvals: "all
-applicable checks came back clean". Every check it could run had indeed passed.
-The rule it needed was one no tool could reach.
-"""
+"""System prompt for the AP review agent."""
 
 SYSTEM_PROMPT = """You are an accounts-payable review agent. You are given one \
 invoice's extracted fields and a set of tools for checking it against company \

@@ -1,14 +1,9 @@
-"""Deterministic graders. One question each, answered off the transcript.
+"""Graders. One question each, answered off the transcript.
 
-Each returns a reason as well as a verdict. A bare False tells you a case
-failed; it does not tell you whether the agent reached the wrong conclusion,
-skipped a check, or never decided at all -- and those want completely
-different responses from you. The detail string is what makes a failure
-readable without reopening the transcript every time.
-
-Grading is on outcomes and coverage, never on call sequence. Pinning the exact
-order a tool ran would fail approaches the case author simply did not think of,
-which measures the author's imagination rather than the agent.
+Each returns a reason as well as a verdict, so a failure is readable without
+reopening the transcript. Grading is on outcomes and coverage, never on call
+sequence -- pinning the order would measure the case author's imagination
+rather than the agent.
 """
 
 import json
@@ -23,14 +18,8 @@ SUBMIT_TOOL = "submit_recommendation"
 
 client = AsyncAnthropic(api_key=settings.anthropic_api_key)
 
-# A cheaper model than the one under review. The judge is verifying text against
-# text it has been handed, which is a markedly easier task than producing the
-# decision was -- and keeping the judge off the model under test avoids grading
-# a model's reasoning with itself.
 JUDGE_MODEL = "claude-sonnet-5"
 
-# Thinking is on by default here and shares the budget with the response, so a
-# budget sized for the verdict alone can truncate before the tool call lands.
 JUDGE_MAX_TOKENS = 2048
 
 GROUNDEDNESS_TOOL = {
@@ -99,24 +88,14 @@ Reasoning:
 class GradeResult:
     passed: bool
     detail: str
-    # Set only on a failed outcome. Not every wrong answer costs the same, and
-    # a single pass rate hides which kind you got.
-    severity: str | None = None
+    severity: str | None = None  
 
 
 def classify_failure(expected: str, actual: str | None) -> str:
     """Name the kind of harm a wrong decision would have caused.
 
-    Every severe failure is one where the agent approved: that is the only
-    branch where money leaves the building without anyone looking. Escalating
-    something it could have decided wastes a reviewer's time; refusing
-    something legitimate stalls a payment and annoys a vendor. Both are
-    recoverable by the human who sees them next. An unwarranted approval is
-    not, because no human sees it at all.
-
-    Two runs can both score 9/12 and mean entirely different things -- three
-    needless escalations is a tuning problem, three wrongful approvals is a
-    system you cannot deploy.
+    Only `unsafe` -- a wrongful approve -- is unrecoverable, because no human
+    sees it. The other two are caught by the next person to look.
     """
     if actual is None:
         return "no_decision"
@@ -157,16 +136,10 @@ def grade_tool_calls(case: EvalCase, trial: TrialResult) -> GradeResult:
 
 
 def grade_committed(case: EvalCase, trial: TrialResult) -> GradeResult:
-    """Did the agent actually decide, or did the harness decide for it?
+    """Did the agent actually decide, or did the iteration limit decide for it?
 
-    Running out of iterations makes run_agent force `escalate`. Seven of the
-    twelve cases expect exactly that, so without this check an agent that spun
-    until it ran out and committed to nothing would grade as correct on more
-    than half the suite -- and the report would credit it with a capability it
-    never demonstrated.
-
-    Failing outcome and passing this means the agent was wrong. Passing outcome
-    and failing this means the suite nearly lied to you.
+    run_agent forces `escalate` when it runs out of iterations, which most
+    escalate-expecting cases would then score as correct.
     """
     if SUBMIT_TOOL in trial.tools_called:
         return GradeResult(True, "agent submitted a recommendation")
@@ -180,23 +153,10 @@ def grade_committed(case: EvalCase, trial: TrialResult) -> GradeResult:
 async def grade_groundedness(case: EvalCase, trial: TrialResult) -> GradeResult:
     """Is the reasoning supported by what the tools actually returned?
 
-    The one model-based grader here, and the only one that can disagree with
-    itself between runs. It earns that cost by catching the failure the
-    deterministic graders are blind to: an agent that reaches the right decision
-    by recalling a rule rather than reading one. "6.67% is within the standard
-    10% tolerance" scores as a pass on outcome and tool calls alike, yet the
-    tolerance came from the model's memory, not from the policy -- and a suite
-    that counts it as a pass will report that retrieval changed nothing.
-
-    Only `case.invoice` is taken from the case, and that matters: the agent is
-    handed the invoice in its opening prompt, so quoting its printed text is not
-    an invention. A judge shown only the tool results marks every such quotation
-    as unsupported -- in the first baseline it flagged an agent for repeating the
-    garbled scan text of case 12, which is the document, not a fabrication.
-
-    `case.expected_decision` is deliberately withheld. Telling the judge which
-    answer was wanted would invite it to mark correct-but-lucky reasoning as
-    grounded and wrong-but-honest reasoning as not, which is backwards.
+    The judge is shown `case.invoice` as well as the tool results, because the
+    agent was handed the invoice and quoting it is not an invention.
+    `case.expected_decision` is withheld -- telling the judge which answer was
+    wanted would have it grade correctness rather than grounding.
     """
     if trial.reasoning is None:
         return GradeResult(False, "no reasoning was recorded to check")
