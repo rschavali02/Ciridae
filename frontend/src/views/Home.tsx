@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 import { Link, useNavigate } from "react-router";
-import { listInvoices, uploadInvoice, type InvoiceSummary } from "../api";
+import { listInvoices, uploadInvoice } from "../api";
+import { queryKeys } from "../queryKeys";
 
 function formatAmount(amount: number | null, currency: string | null): string {
   if (amount === null) return "—";
@@ -22,45 +24,33 @@ function decisionRowClass(decision: string | null): string {
 }
 
 function Home() {
-  const [invoices, setInvoices] = useState<InvoiceSummary[] | null>(null);
   const [file, setFile] = useState<File | null>(null);
-  const [uploading, setUploading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
-  const refresh = useCallback(async () => {
-    try {
-      setInvoices(await listInvoices());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong");
-    }
-  }, []);
+  const { data: invoices, error: listError } = useQuery({
+    queryKey: queryKeys.invoices,
+    queryFn: listInvoices,
+  });
 
-  useEffect(() => {
-    refresh();
-  }, [refresh]);
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!file) return;
-
-    setUploading(true);
-    setError(null);
-    try {
-      const response = await uploadInvoice(file);
+  const upload = useMutation({
+    mutationFn: uploadInvoice,
+    onSuccess: (response) => {
+      // The new invoice belongs in the queue behind this navigation.
+      queryClient.invalidateQueries({ queryKey: queryKeys.invoices });
       // Straight to the invoice's own URL. The review has not finished, and
       // that route renders the live ticker until it does -- so the page a
       // reviewer watches is the page they can send to someone else.
-      //
-      // `uploading` is deliberately not reset here: this component unmounts on
-      // navigation, and clearing it first only flickers the button back to its
-      // idle label on the way out.
       navigate(`/invoices/${response.id}`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong");
-      setUploading(false);
-    }
+    },
+  });
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (file) upload.mutate(file);
   }
+
+  const error = upload.error ?? (invoices ? null : listError);
 
   // Once a person has approved or rejected an invoice, it belongs in History,
   // not here -- otherwise a decided invoice keeps sitting in the queue that is
@@ -85,11 +75,15 @@ function Home() {
             accept="application/pdf"
             onChange={(e) => setFile(e.target.files?.[0] ?? null)}
           />
-          <button type="submit" disabled={!file || uploading}>
-            {uploading ? "Uploading…" : "Review invoice"}
+          <button type="submit" disabled={!file || upload.isPending}>
+            {upload.isPending ? "Uploading…" : "Review invoice"}
           </button>
         </form>
-        {error && <p className="error">{error}</p>}
+        {error && (
+          <p className="error">
+            {error instanceof Error ? error.message : "Something went wrong"}
+          </p>
+        )}
       </section>
 
       {hasInvoices && (

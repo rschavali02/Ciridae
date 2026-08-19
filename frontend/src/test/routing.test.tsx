@@ -1,10 +1,9 @@
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { RouterProvider, createMemoryRouter } from "react-router";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import * as api from "../api";
-import { routes } from "../routes";
+import { renderApp } from "./renderApp";
 import {
   auditEntry,
   pendingVendor,
@@ -30,11 +29,6 @@ vi.mock("../api", () => ({
   invoiceFileUrl: (id: string) => `http://localhost:8000/invoices/${id}/file`,
 }));
 
-function renderAt(path: string) {
-  const router = createMemoryRouter(routes, { initialEntries: [path] });
-  return render(<RouterProvider router={router} />);
-}
-
 beforeEach(() => {
   vi.clearAllMocks();
   // Sensible empty defaults; individual tests override what they care about.
@@ -45,21 +39,21 @@ beforeEach(() => {
 
 describe("each screen has its own URL", () => {
   test("the index route shows the uploader", async () => {
-    renderAt("/");
+    renderApp("/");
     expect(
       await screen.findByRole("heading", { name: /upload an invoice/i }),
     ).toBeInTheDocument();
   });
 
   test("/history shows the decision history", async () => {
-    renderAt("/history");
+    renderApp("/history");
     expect(
       await screen.findByRole("heading", { name: /decision history/i }),
     ).toBeInTheDocument();
   });
 
   test("/vendors shows the vendor approvals queue", async () => {
-    renderAt("/vendors");
+    renderApp("/vendors");
     expect(
       await screen.findByRole("heading", { name: /vendor approvals/i }),
     ).toBeInTheDocument();
@@ -68,7 +62,7 @@ describe("each screen has its own URL", () => {
   test("/invoices/:invoiceId shows that invoice, read from the URL", async () => {
     vi.mocked(api.getInvoice).mockResolvedValue(settledDetail);
 
-    renderAt("/invoices/inv-settled");
+    renderApp("/invoices/inv-settled");
 
     expect(
       await screen.findByRole("heading", { name: "ACME Incorporated" }),
@@ -83,7 +77,7 @@ describe("one invoice URL covers the whole review", () => {
     vi.mocked(api.getInvoice).mockResolvedValue(runningDetail);
     vi.mocked(api.getActivity).mockResolvedValue(runningActivity);
 
-    renderAt("/invoices/inv-running");
+    renderApp("/invoices/inv-running");
 
     expect(await screen.findByText(/searching policy/i)).toBeInTheDocument();
     // The settled view must not be on screen: there is no decision yet.
@@ -93,7 +87,7 @@ describe("one invoice URL covers the whole review", () => {
   test("shows the decision once the run has settled", async () => {
     vi.mocked(api.getInvoice).mockResolvedValue(settledDetail);
 
-    renderAt("/invoices/inv-settled");
+    renderApp("/invoices/inv-settled");
 
     expect(await screen.findByText(/tool call timeline/i)).toBeInTheDocument();
     expect(screen.queryByText(/searching policy/i)).not.toBeInTheDocument();
@@ -106,7 +100,7 @@ describe("navigation", () => {
     vi.mocked(api.getInvoice).mockResolvedValue(settledDetail);
     const user = userEvent.setup();
 
-    renderAt("/");
+    renderApp("/");
     await user.click(await screen.findByRole("link", { name: "ACME Incorporated" }));
 
     expect(
@@ -121,7 +115,7 @@ describe("navigation", () => {
     vi.mocked(api.getActivity).mockResolvedValue(runningActivity);
     const user = userEvent.setup();
 
-    renderAt("/");
+    renderApp("/");
     const file = new File(["%PDF-1.4"], "invoice.pdf", { type: "application/pdf" });
     await user.upload(await screen.findByLabelText(/invoice pdf/i), file);
     await user.click(screen.getByRole("button", { name: /review invoice/i }));
@@ -132,11 +126,11 @@ describe("navigation", () => {
   });
 
   test("the Invoices tab is active on the queue and not on history", async () => {
-    const { unmount } = renderAt("/");
+    const { unmount } = renderApp("/");
     expect(await screen.findByRole("link", { name: "Invoices" })).toHaveClass("active");
     unmount();
 
-    renderAt("/history");
+    renderApp("/history");
     expect(await screen.findByRole("link", { name: "Invoices" })).not.toHaveClass("active");
   });
 });
@@ -146,7 +140,7 @@ describe("the pending-vendor badge", () => {
     vi.mocked(api.listPendingVendors).mockResolvedValue([pendingVendor]);
     const user = userEvent.setup();
 
-    renderAt("/");
+    renderApp("/");
     await user.click(
       await screen.findByRole("link", { name: /1 vendor awaiting approval/i }),
     );
@@ -159,7 +153,7 @@ describe("the pending-vendor badge", () => {
   test("is hidden once you are already on the vendors screen", async () => {
     vi.mocked(api.listPendingVendors).mockResolvedValue([pendingVendor]);
 
-    renderAt("/vendors");
+    renderApp("/vendors");
     await screen.findByRole("heading", { name: /vendor approvals/i });
 
     expect(
@@ -177,7 +171,7 @@ describe("the run settling is what swaps the view", () => {
       .mockResolvedValue(settledDetail);
     vi.mocked(api.getActivity).mockResolvedValue(settledActivity);
 
-    renderAt("/invoices/inv-running");
+    renderApp("/invoices/inv-running");
 
     expect(await screen.findByText(/tool call timeline/i)).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: /reviewing invoice/i })).not.toBeInTheDocument();
@@ -192,7 +186,7 @@ describe("the run settling is what swaps the view", () => {
       .mockRejectedValue(new Error("Request failed: 503 Service Unavailable"));
     vi.mocked(api.getActivity).mockResolvedValue(settledActivity);
 
-    renderAt("/invoices/inv-running");
+    renderApp("/invoices/inv-running");
     await screen.findByRole("heading", { name: /reviewing invoice/i });
 
     // The failed reload must not replace the page with a bare error string.
@@ -204,7 +198,7 @@ describe("the run settling is what swaps the view", () => {
   test("still reports a failure on the very first load", async () => {
     vi.mocked(api.getInvoice).mockRejectedValue(new Error("Request failed: 404 Not Found"));
 
-    renderAt("/invoices/inv-missing");
+    renderApp("/invoices/inv-missing");
 
     expect(await screen.findByText(/404 not found/i)).toBeInTheDocument();
   });
@@ -216,7 +210,7 @@ describe("every screen has a way out", () => {
     vi.mocked(api.getActivity).mockResolvedValue(runningActivity);
     const user = userEvent.setup();
 
-    renderAt("/invoices/inv-running");
+    renderApp("/invoices/inv-running");
     await user.click(await screen.findByRole("link", { name: /back to queue/i }));
 
     expect(await screen.findByRole("heading", { name: /upload an invoice/i })).toBeInTheDocument();
@@ -229,7 +223,7 @@ describe("every screen has a way out", () => {
     vi.mocked(api.getActivity).mockResolvedValue(runningActivity);
     const user = userEvent.setup();
 
-    renderAt("/invoices/inv-running");
+    renderApp("/invoices/inv-running");
     await user.click(await screen.findByRole("button", { name: /show details anyway/i }));
 
     expect(await screen.findByText(/tool call timeline/i)).toBeInTheDocument();
@@ -240,7 +234,7 @@ describe("every screen has a way out", () => {
     vi.mocked(api.getInvoice).mockResolvedValue(settledDetail);
     const user = userEvent.setup();
 
-    renderAt("/invoices/inv-settled");
+    renderApp("/invoices/inv-settled");
     await user.click(await screen.findByRole("link", { name: /back to queue/i }));
 
     expect(await screen.findByRole("heading", { name: /upload an invoice/i })).toBeInTheDocument();
@@ -250,14 +244,14 @@ describe("every screen has a way out", () => {
     vi.mocked(api.listPendingVendors).mockResolvedValue([pendingVendor]);
     const user = userEvent.setup();
 
-    renderAt("/vendors");
+    renderApp("/vendors");
     await user.click(await screen.findByRole("link", { name: /back to queue/i }));
 
     expect(await screen.findByRole("heading", { name: /upload an invoice/i })).toBeInTheDocument();
   });
 
   test("an unknown URL offers a way home rather than a framework error", async () => {
-    renderAt("/invoces/inv-settled");
+    renderApp("/invoces/inv-settled");
 
     expect(await screen.findByRole("heading", { name: /page not found/i })).toBeInTheDocument();
     await userEvent.setup().click(screen.getByRole("link", { name: /back to queue/i }));
@@ -271,7 +265,7 @@ describe("deciding an invoice returns to the queue", () => {
     vi.mocked(api.approveInvoice).mockResolvedValue(settledSummary);
     const user = userEvent.setup();
 
-    renderAt("/invoices/inv-settled");
+    renderApp("/invoices/inv-settled");
     await user.click(await screen.findByRole("button", { name: "Approve" }));
 
     expect(await screen.findByRole("heading", { name: /upload an invoice/i })).toBeInTheDocument();
@@ -283,7 +277,7 @@ describe("the nav reflects where you are", () => {
   test("Invoices stays lit on an invoice's own page", async () => {
     vi.mocked(api.getInvoice).mockResolvedValue(settledDetail);
 
-    renderAt("/invoices/inv-settled");
+    renderApp("/invoices/inv-settled");
     await screen.findByRole("heading", { name: "ACME Incorporated" });
 
     expect(screen.getByRole("link", { name: "Invoices" })).toHaveClass("active");
@@ -293,7 +287,7 @@ describe("the nav reflects where you are", () => {
   test("the badge stays hidden on the vendors screen even with a trailing slash", async () => {
     vi.mocked(api.listPendingVendors).mockResolvedValue([pendingVendor]);
 
-    renderAt("/vendors/");
+    renderApp("/vendors/");
     await screen.findByRole("heading", { name: /vendor approvals/i });
 
     expect(screen.queryByRole("link", { name: /awaiting approval/i })).not.toBeInTheDocument();
@@ -304,7 +298,7 @@ describe("history", () => {
   test("lists decisions a person has already made", async () => {
     vi.mocked(api.listAuditLog).mockResolvedValue([auditEntry]);
 
-    renderAt("/history");
+    renderApp("/history");
 
     expect(await screen.findByText("ACME Incorporated")).toBeInTheDocument();
     expect(screen.getByText("Approved")).toBeInTheDocument();

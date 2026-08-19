@@ -1,5 +1,7 @@
-import { useEffect, useRef, useState } from "react";
-import { getActivity, type Activity } from "../api";
+import { useQuery } from "@tanstack/react-query";
+import { useEffect } from "react";
+import { getActivity } from "../api";
+import { queryKeys } from "../queryKeys";
 
 const LABELS: Record<string, (input: any) => string> = {
   lookup_vendor: (i) => `Resolving vendor "${i.vendor_name}"…`,
@@ -23,62 +25,44 @@ function describeStep(tool: string | null, input: Record<string, unknown> | null
 interface AgentTickerProps {
   invoiceId: string;
   /** Called once, the first time polling observes a settled run. */
-  onSettled?: (activity: Activity) => void;
+  onSettled?: () => void;
 }
 
 function AgentTicker({ invoiceId, onSettled }: AgentTickerProps) {
-  const [activity, setActivity] = useState<Activity | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const {
+    data: activity,
+    error,
+  } = useQuery({
+    queryKey: queryKeys.invoiceActivity(invoiceId),
+    queryFn: () => getActivity(invoiceId),
+    // The stopping condition lives in the query rather than in a cleared
+    // interval: returning false ends the polling, which is what the hand-rolled
+    // version needed a `settled` flag, three clearInterval calls and a ref for.
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status && status !== "running" ? false : 1000;
+    },
+    // A finished transcript is immutable, so nothing re-reads it on age alone.
+    // It is still re-read once when a decision invalidates the `invoices`
+    // prefix, which reaches this key -- that is a real change, not staleness.
+    staleTime: Infinity,
+  });
 
-  // A ref rather than an effect dependency: the caller's callback is typically
-  // a fresh closure every render, and depending on it directly would restart
-  // polling -- clearing progress and re-triggering "Starting…" -- on every
-  // unrelated re-render of the parent.
-  const onSettledRef = useRef(onSettled);
-  onSettledRef.current = onSettled;
+  const settled = activity != null && activity.status !== null && activity.status !== "running";
 
   useEffect(() => {
-    let cancelled = false;
-    let settled = false;
-    let intervalId: ReturnType<typeof setInterval> | undefined;
-
-    async function poll() {
-      try {
-        const next = await getActivity(invoiceId);
-        if (cancelled) return;
-        setActivity(next);
-
-        // null means the row does not exist yet -- the window between the
-        // upload responding and run_agent's begin() actually committing --
-        // and must not be read as "finished with nothing to show".
-        const isSettled = next.status !== null && next.status !== "running";
-        if (isSettled) {
-          if (intervalId !== undefined) clearInterval(intervalId);
-          if (!settled) {
-            settled = true;
-            onSettledRef.current?.(next);
-          }
-        }
-      } catch (err) {
-        if (cancelled) return;
-        setError(err instanceof Error ? err.message : "Something went wrong");
-        if (intervalId !== undefined) clearInterval(intervalId);
-      }
-    }
-
-    poll();
-    intervalId = setInterval(poll, 1000);
-
-    return () => {
-      cancelled = true;
-      if (intervalId !== undefined) clearInterval(intervalId);
-    };
-  }, [invoiceId]);
+    if (settled) onSettled?.();
+    // `onSettled` is stable (the caller memoises it), so this fires on the
+    // settle and not on every render of the page around it.
+  }, [settled, onSettled]);
 
   if (error) {
-    return <p className="error">{error}</p>;
+    return <p className="error">{error instanceof Error ? error.message : "Something went wrong"}</p>;
   }
 
+  // null status means the row does not exist yet -- the window between the
+  // upload responding and run_agent's begin() actually committing -- and must
+  // not be read as "finished with nothing to show".
   if (!activity || activity.status === null) {
     return <p className="ticker">Starting…</p>;
   }

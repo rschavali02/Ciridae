@@ -1,48 +1,32 @@
-import { useEffect, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router";
-import { approveVendor, listPendingVendors, type PendingVendor } from "../api";
+import { approveVendor, listPendingVendors } from "../api";
+import { queryKeys } from "../queryKeys";
 
 function VendorApprovals() {
-  const [vendors, setVendors] = useState<PendingVendor[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [approvingId, setApprovingId] = useState<string | null>(null);
+  const queryClient = useQueryClient();
 
-  useEffect(() => {
-    let cancelled = false;
+  // Same key the badge in App uses, so the two share a single read.
+  const { data: vendors, error } = useQuery({
+    queryKey: queryKeys.pendingVendors,
+    queryFn: listPendingVendors,
+  });
 
-    async function load() {
-      try {
-        const pending = await listPendingVendors();
-        if (cancelled) return;
-        setVendors(pending);
-      } catch (err) {
-        if (cancelled) return;
-        setError(err instanceof Error ? err.message : "Something went wrong");
-      }
-    }
+  const approve = useMutation({
+    mutationFn: approveVendor,
+    onSuccess: () => {
+      // Two things went stale, not one. The vendor leaves this queue -- and
+      // approving it also adopts the invoices that were waiting on that payee,
+      // so the invoice queue behind this screen is stale too. Prefix matching
+      // means one call per concern, and neither is the caller's job to
+      // remember at the point they navigate away.
+      queryClient.invalidateQueries({ queryKey: queryKeys.pendingVendors });
+      queryClient.invalidateQueries({ queryKey: queryKeys.invoices });
+    },
+  });
 
-    load();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  async function handleApprove(id: string) {
-    setApprovingId(id);
-    setActionError(null);
-    try {
-      await approveVendor(id);
-      setVendors((prev) => (prev ? prev.filter((vendor) => vendor.id !== id) : prev));
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : "Something went wrong");
-    } finally {
-      setApprovingId(null);
-    }
-  }
-
-  if (error) {
-    return <p className="error">{error}</p>;
+  if (error && !vendors) {
+    return <p className="error">{error instanceof Error ? error.message : "Something went wrong"}</p>;
   }
 
   if (!vendors) {
@@ -61,7 +45,11 @@ function VendorApprovals() {
         verified out of band — check them before approving.
       </p>
 
-      {actionError && <p className="error">{actionError}</p>}
+      {approve.error && (
+        <p className="error">
+          {approve.error instanceof Error ? approve.error.message : "Something went wrong"}
+        </p>
+      )}
 
       {vendors.length === 0 ? (
         <p>Nothing waiting on you.</p>
@@ -84,10 +72,12 @@ function VendorApprovals() {
                 <td>
                   <button
                     type="button"
-                    onClick={() => handleApprove(vendor.id)}
-                    disabled={approvingId !== null}
+                    onClick={() => approve.mutate(vendor.id)}
+                    disabled={approve.isPending}
                   >
-                    {approvingId === vendor.id ? "Approving…" : "Approve"}
+                    {approve.isPending && approve.variables === vendor.id
+                      ? "Approving…"
+                      : "Approve"}
                   </button>
                 </td>
               </tr>

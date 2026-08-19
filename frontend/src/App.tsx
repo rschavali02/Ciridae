@@ -1,11 +1,11 @@
-import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Link, NavLink, Outlet, useMatch } from "react-router";
 import { listPendingVendors } from "./api";
+import { queryKeys } from "./queryKeys";
 import "./App.css";
 
 /** The layout every screen renders inside: nav, vendor badge, and the route. */
 function App() {
-  const [pendingVendorCount, setPendingVendorCount] = useState(0);
   // Route matching rather than string comparison: `/vendors/` resolves to the
   // same route, and a bare `pathname !== "/vendors"` would miss it and render
   // a badge on the page it links to.
@@ -24,29 +24,17 @@ function App() {
   // Polled rather than refreshed only on invoice completion: a draft can also
   // be created by an invoice uploaded earlier in the same session, and the
   // badge should reflect the queue even if nothing new has just finished.
-  useEffect(() => {
-    let cancelled = false;
+  //
+  // Same key as the vendor approvals screen, so the two share one read rather
+  // than each fetching the list independently. A failed poll keeps the last
+  // known count instead of interrupting whatever the reviewer is doing.
+  const { data: pendingVendors } = useQuery({
+    queryKey: queryKeys.pendingVendors,
+    queryFn: listPendingVendors,
+    refetchInterval: 5000,
+  });
 
-    async function poll() {
-      try {
-        const pending = await listPendingVendors();
-        if (!cancelled) setPendingVendorCount(pending.length);
-      } catch {
-        // A failed background poll should not interrupt whatever the user is
-        // doing -- the badge just stays at its last known count.
-      }
-    }
-
-    poll();
-    const intervalId = setInterval(poll, 5000);
-    return () => {
-      cancelled = true;
-      clearInterval(intervalId);
-    };
-  }, []);
-
-  // Hidden on the vendors screen itself: a count of what you are already
-  // looking at is noise, and the link would lead back to this page.
+  const pendingVendorCount = pendingVendors?.length ?? 0;
   const showBadge = pendingVendorCount > 0 && !onVendors;
 
   return (

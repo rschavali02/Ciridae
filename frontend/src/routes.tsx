@@ -9,13 +9,14 @@ import NotFound from "./views/NotFound";
 import VendorApprovals from "./views/VendorApprovals";
 
 /**
- * Keying on the id remounts the view when the URL moves between invoices, so
- * one invoice's transcript can never be shown under another one's id while the
- * new fetch is still in the air.
+ * Narrows the URL param once and keys on it, so the view below can treat the
+ * id as a plain string and a move between invoices remounts rather than
+ * showing one invoice's transcript under another one's id.
  */
 function KeyedInvoiceDetail() {
   const { invoiceId } = useParams<{ invoiceId: string }>();
-  return <InvoiceDetail key={invoiceId} />;
+  if (!invoiceId) return <NotFound />;
+  return <InvoiceDetail key={invoiceId} invoiceId={invoiceId} />;
 }
 
 // Exported as data rather than built inside main.tsx so tests can mount the

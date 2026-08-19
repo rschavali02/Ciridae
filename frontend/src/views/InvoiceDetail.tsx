@@ -1,11 +1,8 @@
-import { useEffect, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router";
-import {
-  approveInvoice,
-  getInvoice,
-  rejectInvoice,
-  type InvoiceDetail as InvoiceDetailType,
-} from "../api";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useState } from "react";
+import { Link, useNavigate } from "react-router";
+import { approveInvoice, getInvoice, rejectInvoice } from "../api";
+import { queryKeys } from "../queryKeys";
 import AgentTicker from "../components/AgentTicker";
 import PdfPreview from "../components/PdfPreview";
 import ReasoningSummary from "../components/ReasoningSummary";
@@ -27,72 +24,58 @@ function formatConfidence(confidence: number | null): string {
  * a reviewer can hand someone the link to a review that is still happening, and
  * the page becomes the decision when the agent reaches one.
  */
-function InvoiceDetail() {
-  const { invoiceId } = useParams<{ invoiceId: string }>();
+interface InvoiceDetailProps {
+  /** Narrowed by the route wrapper, so nothing below has to re-check it. */
+  invoiceId: string;
+}
+
+function InvoiceDetail({ invoiceId }: InvoiceDetailProps) {
   const navigate = useNavigate();
-  const [invoice, setInvoice] = useState<InvoiceDetailType | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [actingOn, setActingOn] = useState<"approve" | "reject" | null>(null);
+  const queryClient = useQueryClient();
   const [note, setNote] = useState("");
-  // Bumped when the ticker sees the run settle, to pull the finished
-  // transcript. This is a stand-in for a cache invalidation.
-  const [reloadKey, setReloadKey] = useState(0);
   // A run whose backend died stays "running" in the database forever. Rather
   // than leave this URL as a ticker that never resolves, let the reviewer drop
   // to the fields that were extracted before the run stalled.
   const [showStalledDetail, setShowStalledDetail] = useState(false);
 
-  useEffect(() => {
-    if (!invoiceId) return;
-    let cancelled = false;
+  const { data: invoice, error } = useQuery({
+    queryKey: queryKeys.invoice(invoiceId),
+    queryFn: () => getInvoice(invoiceId),
+  });
 
-    async function load() {
-      try {
-        const detail = await getInvoice(invoiceId!);
-        if (cancelled) return;
-        setInvoice(detail);
-        setError(null);
-      } catch (err) {
-        if (cancelled) return;
-        // Only a first load has nothing to fall back on. A refresh that fails
-        // keeps whatever was already on screen -- blanking a settled decision
-        // because a background re-read 503'd loses the thing the reviewer
-        // came for, and the ticker has already stopped polling by then.
-        setInvoice((current) => {
-          if (current === null) {
-            setError(err instanceof Error ? err.message : "Something went wrong");
-          }
-          return current;
-        });
-      }
-    }
+  // Memoised so the ticker's settle effect fires on the settle rather than on
+  // every render of this page.
+  const handleSettled = useCallback(() => {
+    // The whole `invoices` prefix, not just this one. Prefix matching runs in
+    // one direction: `["invoices", id]` reaches this invoice's activity feed
+    // but never the queue above it. A run settling changes the queue row's
+    // decision, confidence and run_status, so the queue is exactly what went
+    // stale -- and nothing else would re-read it, since it has no interval and
+    // a back navigation fires no focus event.
+    queryClient.invalidateQueries({ queryKey: queryKeys.invoices });
+  }, [queryClient]);
 
-    load();
-    return () => {
-      cancelled = true;
-    };
-  }, [invoiceId, reloadKey]);
-
-  async function handleDecision(action: "approve" | "reject") {
-    if (!invoiceId) return;
-    setActingOn(action);
-    setActionError(null);
-    try {
-      await (action === "approve" ? approveInvoice : rejectInvoice)(invoiceId, note);
+  const decide = useMutation({
+    mutationFn: ({ action }: { action: "approve" | "reject" }) =>
+      (action === "approve" ? approveInvoice : rejectInvoice)(invoiceId, note),
+    onSuccess: () => {
+      // One call covers the queue, this invoice and its activity feed -- they
+      // share the `invoices` prefix -- plus the audit log the decision just
+      // wrote a row to.
+      queryClient.invalidateQueries({ queryKey: queryKeys.invoices });
+      queryClient.invalidateQueries({ queryKey: queryKeys.auditLog });
       // Back to the queue rather than staying on the now-decided invoice.
       // Leaving it open kept Approve/Reject live with nothing to stop a second
       // click -- which is how the same invoice ended up with several identical
       // entries in the decision history.
       navigate("/");
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : "Something went wrong");
-      setActingOn(null);
-    }
-  }
+    },
+  });
 
-  if (error) {
-    return <p className="error">{error}</p>;
+  if (error && !invoice) {
+    return (
+      <p className="error">{error instanceof Error ? error.message : "Something went wrong"}</p>
+    );
   }
 
   if (!invoice) {
@@ -115,7 +98,7 @@ function InvoiceDetail() {
             <AgentTicker
               key={invoice.id}
               invoiceId={invoice.id}
-              onSettled={() => setReloadKey((key) => key + 1)}
+              onSettled={handleSettled}
             />
             <button type="button" onClick={() => setShowStalledDetail(true)}>
               Show details anyway
@@ -197,7 +180,11 @@ function InvoiceDetail() {
         <ToolCallTimeline toolCalls={invoice.tool_calls} />
       </section>
 
-      {actionError && <p className="error">{actionError}</p>}
+      {decide.error && (
+        <p className="error">
+          {decide.error instanceof Error ? decide.error.message : "Something went wrong"}
+        </p>
+      )}
 
       <section className="decision-note" hidden={invoice.run_status !== "complete"}>
         <label htmlFor="decision-note">Note (optional)</label>
@@ -209,11 +196,19 @@ function InvoiceDetail() {
           rows={3}
         />
         <div>
-          <button type="button" onClick={() => handleDecision("approve")} disabled={actingOn !== null}>
-            {actingOn === "approve" ? "Approving…" : "Approve"}
+          <button
+            type="button"
+            onClick={() => decide.mutate({ action: "approve" })}
+            disabled={decide.isPending}
+          >
+            {decide.isPending && decide.variables?.action === "approve" ? "Approving…" : "Approve"}
           </button>
-          <button type="button" onClick={() => handleDecision("reject")} disabled={actingOn !== null}>
-            {actingOn === "reject" ? "Rejecting…" : "Reject"}
+          <button
+            type="button"
+            onClick={() => decide.mutate({ action: "reject" })}
+            disabled={decide.isPending}
+          >
+            {decide.isPending && decide.variables?.action === "reject" ? "Rejecting…" : "Reject"}
           </button>
         </div>
       </section>

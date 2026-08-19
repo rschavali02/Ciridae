@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
-import { listAuditLog, type AuditEntry } from "../api";
+import { useQuery } from "@tanstack/react-query";
+import { listAuditLog } from "../api";
+import { queryKeys } from "../queryKeys";
 
 function formatAmount(amount: number | null, currency: string | null): string {
   if (amount === null) return "—";
@@ -16,29 +17,15 @@ function actionClass(action: string): string {
 }
 
 function History() {
-  const [entries, setEntries] = useState<AuditEntry[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const { data: entries, error } = useQuery({
+    queryKey: queryKeys.auditLog,
+    queryFn: listAuditLog,
+  });
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function load() {
-      try {
-        const data = await listAuditLog();
-        if (!cancelled) setEntries(data);
-      } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : "Something went wrong");
-      }
-    }
-
-    load();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  if (error) {
-    return <p className="error">{error}</p>;
+  // Only a first read has nothing to fall back on; a failed refresh keeps the
+  // log that is already on screen.
+  if (error && !entries) {
+    return <p className="error">{error instanceof Error ? error.message : "Something went wrong"}</p>;
   }
 
   if (!entries) {
