@@ -379,7 +379,14 @@ like retrieval having regressed. Both are explained in
 cd frontend
 npm install
 npm run dev                     # serves on :5173
+npm test                        # 23 tests, no API calls
 ```
+
+Every screen has its own URL -- `/`, `/invoices/:invoiceId`, `/history`,
+`/vendors` -- so a reviewer can hand a colleague the invoice under discussion,
+including one whose review is still running. Serving the built `dist/` from
+anything other than Vite therefore needs an SPA fallback: unknown paths must
+return `index.html`, or a refresh on `/invoices/<id>` 404s.
 
 ---
 

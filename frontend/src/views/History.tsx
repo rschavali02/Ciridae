@@ -15,11 +15,7 @@ function actionClass(action: string): string {
   return action === "approve" ? "row-approved" : "row-held";
 }
 
-interface HistoryProps {
-  onBack?: () => void;
-}
-
-function History({ onBack }: HistoryProps) {
+function History() {
   const [entries, setEntries] = useState<AuditEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -51,12 +47,6 @@ function History({ onBack }: HistoryProps) {
 
   return (
     <main className="home-queue">
-      {onBack && (
-        <button type="button" onClick={onBack}>
-          ← Back
-        </button>
-      )}
-
       <h1>Decision history</h1>
       <p>Every invoice a person has approved or rejected, most recent first.</p>
 

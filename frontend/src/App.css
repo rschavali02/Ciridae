@@ -136,18 +136,13 @@ main.home-queue .uploader h1 {
 }
 
 /* The vendor name is the one thing in a row that opens the invoice, so it is
-   styled as a link rather than relying on the whole row being clickable with
-   no visual sign of it. */
+   the row's link rather than relying on the whole row being clickable with no
+   visual sign of it. */
 .vendor-link {
-  background: none;
-  border: none;
-  padding: 0;
-  margin: 0;
   font: inherit;
   color: #2b6cb0;
   text-decoration: underline;
   text-underline-offset: 2px;
-  cursor: pointer;
 }
 
 .vendor-link:hover {
@@ -175,12 +170,12 @@ main.home-queue .uploader h1 {
   line-height: 1.5;
 }
 
-/* --- PDF preview inside the detail modal ---------------------------------- */
+/* --- PDF preview on the invoice detail page ------------------------------- */
 
 /* Sized explicitly rather than via a flex parent's height, unlike the
-   split-screen preview during processing -- the modal has no such parent to
-   inherit height from. */
-.modal-pdf {
+   split-screen preview shown while a review is running -- the detail page
+   has no such parent to inherit height from. */
+.detail-pdf {
   height: 55vh;
   border: 1px solid #ddd;
   border-radius: 8px;
@@ -189,10 +184,10 @@ main.home-queue .uploader h1 {
   margin-bottom: 1rem;
 }
 
-/* Uploading: the form is gone entirely (not just hidden) and the page is a
-   50/50 split -- the document on the left, the ticker narrating the same
-   review on the right. */
-main.home-processing {
+/* A review still in flight: the page is a 50/50 split -- the document on the
+   left, the ticker narrating the same review on the right. Same URL as the
+   settled decision, which replaces this once the agent commits. */
+main.invoice-review {
   max-width: 1100px;
   margin: 2rem auto;
   padding: 0 1rem;
@@ -230,44 +225,14 @@ main.home-processing {
   padding: 0 1rem;
 }
 
-/* --- Invoice detail modal ------------------------------------------------ */
-
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.45);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 2rem;
-  z-index: 10;
-}
-
-.modal-content {
-  background: #fff;
-  width: 100%;
-  max-width: 800px;
-  max-height: 90vh;
-  overflow-y: auto;
-  border-radius: 10px;
-  padding: 0.5rem 1rem;
-}
-
-/* InvoiceDetail renders its own <main>, sized for a full page; neutralize
-   that so it reads correctly nested inside the modal's own box. */
-.modal-content main {
-  max-width: none;
-  margin: 0;
-  padding: 0.5rem 0 1rem;
-}
-
 /* --- Vendor approval badge ------------------------------------------------ */
 
 .vendor-badge {
+  display: inline-block;
+  text-decoration: none;
   position: fixed;
   top: 1rem;
   right: 1rem;
-  border: none;
   border-radius: 999px;
   padding: 0.45rem 1rem;
   background: #fdf0d5;
@@ -287,23 +252,22 @@ main.home-processing {
   padding: 0 1rem;
 }
 
-.tabs button {
-  background: none;
-  border: none;
+/* NavLink renders an <a> and adds `active` itself when the route matches. */
+.tabs a {
   border-bottom: 2px solid transparent;
   padding: 0.4rem 0.1rem;
   font-size: 0.95rem;
   color: #666;
-  cursor: pointer;
+  text-decoration: none;
 }
 
-.tabs button.active {
+.tabs a.active {
   color: #1a1a1a;
   border-bottom-color: #2b6cb0;
   font-weight: 600;
 }
 
-.tabs button:hover {
+.tabs a:hover {
   color: #1a1a1a;
 }
 
@@ -325,4 +289,39 @@ main.home-processing {
   border-radius: 6px;
   resize: vertical;
   margin-bottom: 0.75rem;
+}
+
+/* --- Back links ----------------------------------------------------------- */
+
+/* The screens the nav cannot reach -- an invoice, the vendor queue, a dead URL
+   -- all use this one affordance, so "how do I get out of here" has a single
+   answer wherever a reviewer lands. */
+.back-link {
+  display: inline-block;
+  margin-bottom: 1rem;
+  font-size: 0.9rem;
+  color: #666;
+  text-decoration: none;
+}
+
+.back-link:hover {
+  color: #1a1a1a;
+}
+
+/* --- Upload field --------------------------------------------------------- */
+
+/* The file input needs a real label to be reachable by name. Set as a quiet
+   caption above the control rather than inline, so it does not read as a
+   second heading under the h1. */
+.uploader form {
+  flex-wrap: wrap;
+}
+
+.uploader label[for="invoice-pdf"] {
+  flex-basis: 100%;
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #777;
+  margin-bottom: 0.25rem;
 }

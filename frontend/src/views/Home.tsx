@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
+import { Link, useNavigate } from "react-router";
 import { listInvoices, uploadInvoice, type InvoiceSummary } from "../api";
-import AgentTicker from "../components/AgentTicker";
-import PdfPreview from "../components/PdfPreview";
-import InvoiceDetail from "./InvoiceDetail";
 
 function formatAmount(amount: number | null, currency: string | null): string {
   if (amount === null) return "—";
@@ -27,9 +25,8 @@ function Home() {
   const [invoices, setInvoices] = useState<InvoiceSummary[] | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
-  const [processingId, setProcessingId] = useState<string | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const navigate = useNavigate();
 
   const refresh = useCallback(async () => {
     try {
@@ -51,45 +48,18 @@ function Home() {
     setError(null);
     try {
       const response = await uploadInvoice(file);
-      // Switches the page into the split-screen state; the uploader and any
-      // existing table are unmounted, not merely hidden, while this is set.
-      setProcessingId(response.id);
-      setFile(null);
+      // Straight to the invoice's own URL. The review has not finished, and
+      // that route renders the live ticker until it does -- so the page a
+      // reviewer watches is the page they can send to someone else.
+      //
+      // `uploading` is deliberately not reset here: this component unmounts on
+      // navigation, and clearing it first only flickers the button back to its
+      // idle label on the way out.
+      navigate(`/invoices/${response.id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
-    } finally {
       setUploading(false);
     }
-  }
-
-  function handleSettled() {
-    setProcessingId(null);
-    refresh();
-  }
-
-  function closeDetail() {
-    // InvoiceDetail updates its own local state optimistically after an
-    // approve/reject, but this table's rows do not share that state -- without
-    // a refresh here, a row approved from the modal would keep showing its old
-    // decision until something else happened to reload the list.
-    setSelectedId(null);
-    refresh();
-  }
-
-  if (processingId) {
-    return (
-      <main className="home-processing">
-        <div className="processing-split">
-          <div className="preview-pane">
-            <PdfPreview invoiceId={processingId} />
-          </div>
-          <div className="ticker-pane">
-            <h2>Reviewing invoice</h2>
-            <AgentTicker key={processingId} invoiceId={processingId} onSettled={handleSettled} />
-          </div>
-        </div>
-      </main>
-    );
   }
 
   // Once a person has approved or rejected an invoice, it belongs in History,
@@ -108,7 +78,9 @@ function Home() {
           <p>Upload an invoice PDF and watch the agent work in near real time.</p>
         )}
         <form onSubmit={handleSubmit}>
+          <label htmlFor="invoice-pdf">Invoice PDF</label>
           <input
+            id="invoice-pdf"
             type="file"
             accept="application/pdf"
             onChange={(e) => setFile(e.target.files?.[0] ?? null)}
@@ -136,13 +108,9 @@ function Home() {
               {openInvoices.map((invoice) => (
                 <tr key={invoice.id} className={decisionRowClass(invoice.decision)}>
                   <td>
-                    <button
-                      type="button"
-                      className="vendor-link"
-                      onClick={() => setSelectedId(invoice.id)}
-                    >
+                    <Link className="vendor-link" to={`/invoices/${invoice.id}`}>
                       {invoice.vendor_name ?? "Unknown vendor"}
-                    </button>
+                    </Link>
                   </td>
                   <td>{formatAmount(invoice.amount, invoice.currency)}</td>
                   <td>
@@ -157,14 +125,6 @@ function Home() {
             </tbody>
           </table>
         </section>
-      )}
-
-      {selectedId && (
-        <div className="modal-overlay" onClick={closeDetail}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <InvoiceDetail invoiceId={selectedId} onBack={closeDetail} />
-          </div>
-        </div>
       )}
     </main>
   );

@@ -1,15 +1,25 @@
 import { useEffect, useState } from "react";
+import { Link, NavLink, Outlet, useMatch } from "react-router";
 import { listPendingVendors } from "./api";
-import History from "./views/History";
-import Home from "./views/Home";
-import VendorApprovals from "./views/VendorApprovals";
 import "./App.css";
 
-type Screen = "home" | "history" | "vendors";
-
+/** The layout every screen renders inside: nav, vendor badge, and the route. */
 function App() {
-  const [screen, setScreen] = useState<Screen>("home");
   const [pendingVendorCount, setPendingVendorCount] = useState(0);
+  // Route matching rather than string comparison: `/vendors/` resolves to the
+  // same route, and a bare `pathname !== "/vendors"` would miss it and render
+  // a badge on the page it links to.
+  const onVendors = useMatch("/vendors");
+  // An invoice's own page belongs to the Invoices section, so the tab stays
+  // lit there. NavLink's own `isActive` is exact-match on "/" and would leave
+  // the whole nav dark on the screen reviewers sit on longest.
+  //
+  // Both matchers are called unconditionally: `a ?? b` would skip the second
+  // hook whenever the first matched, which is a rules-of-hooks violation that
+  // crashes the tree on the very navigation it is meant to describe.
+  const atQueue = useMatch("/");
+  const atInvoice = useMatch("/invoices/*");
+  const onInvoices = Boolean(atQueue || atInvoice);
 
   // Polled rather than refreshed only on invoice completion: a draft can also
   // be created by an invoice uploaded earlier in the same session, and the
@@ -35,36 +45,28 @@ function App() {
     };
   }, []);
 
-  if (screen === "vendors") {
-    return <VendorApprovals onBack={() => setScreen("home")} />;
-  }
+  // Hidden on the vendors screen itself: a count of what you are already
+  // looking at is noise, and the link would lead back to this page.
+  const showBadge = pendingVendorCount > 0 && !onVendors;
 
   return (
     <>
       <nav className="tabs">
-        <button
-          type="button"
-          className={screen === "home" ? "active" : ""}
-          onClick={() => setScreen("home")}
-        >
+        <NavLink to="/" className={() => (onInvoices ? "active" : "")}>
           Invoices
-        </button>
-        <button
-          type="button"
-          className={screen === "history" ? "active" : ""}
-          onClick={() => setScreen("history")}
-        >
+        </NavLink>
+        <NavLink to="/history" className={({ isActive }) => (isActive ? "active" : "")}>
           History
-        </button>
+        </NavLink>
       </nav>
 
-      {pendingVendorCount > 0 && (
-        <button type="button" className="vendor-badge" onClick={() => setScreen("vendors")}>
+      {showBadge && (
+        <Link to="/vendors" className="vendor-badge">
           {pendingVendorCount} vendor{pendingVendorCount === 1 ? "" : "s"} awaiting approval
-        </button>
+        </Link>
       )}
 
-      {screen === "home" ? <Home /> : <History onBack={() => setScreen("home")} />}
+      <Outlet />
     </>
   );
 }

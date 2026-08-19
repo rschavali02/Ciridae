@@ -1,11 +1,8 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router";
 import { approveVendor, listPendingVendors, type PendingVendor } from "../api";
 
-interface VendorApprovalsProps {
-  onBack?: () => void;
-}
-
-function VendorApprovals({ onBack }: VendorApprovalsProps) {
+function VendorApprovals() {
   const [vendors, setVendors] = useState<PendingVendor[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -54,11 +51,7 @@ function VendorApprovals({ onBack }: VendorApprovalsProps) {
 
   return (
     <main>
-      {onBack && (
-        <button type="button" onClick={onBack}>
-          ← Back to queue
-        </button>
-      )}
+      <Link className="back-link" to="/">← Back to queue</Link>
 
       <h1>Vendor approvals</h1>
 
