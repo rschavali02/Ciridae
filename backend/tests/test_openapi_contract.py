@@ -22,7 +22,6 @@ REGENERATE = (
 def test_checked_in_schema_matches_the_app():
     live = app.openapi()["components"]["schemas"]
     saved = json.loads(SCHEMA_PATH.read_text())["components"]["schemas"]
-.
     drifted = sorted(
         name for name in set(live) | set(saved) if live.get(name) != saved.get(name)
     )

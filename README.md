@@ -210,6 +210,7 @@ Two rules govern the suite:
    Cases 06, 07 and 08 differ only in how far the invoice diverges from its PO.
    Cases 02 and 03 differ only in whether the invoice number matches exactly.
    Cases 13 and 14 differ only in whether the prose on the invoice is an instruction or a remark. 
+
 ### Incremental Improvement from Evals
 
 The suite was first run before and after `search_policy` was added, with
