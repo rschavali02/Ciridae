@@ -8,7 +8,8 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "gen:types": "npx -y openapi-typescript@7 openapi.json -o src/api-types.ts",
+    "gen:schema": "cd ../backend && ./venv/bin/python -m scripts.dump_openapi",
+    "gen:types": "npm run gen:schema && npx -y openapi-typescript@7 openapi.json -o src/api-types.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },
